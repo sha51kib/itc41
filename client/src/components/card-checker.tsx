@@ -700,21 +700,21 @@ function CardChecker() {
           {checkMode === "stripe-auth" && (
             <div className="flex items-start gap-2 rounded-md bg-blue-500/5 border border-blue-500/20 px-3 py-2.5 text-xs text-blue-400">
               <Zap className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-              <span>WooCommerce Setup Intent flow. Creates payment method → confirms setup intent. Returns: Approved / 3DS / Declined.</span>
+              <span>Stripe PM Validation. Creates payment method to verify card format. Invalid numbers/CVC/expiry will be declined.</span>
             </div>
           )}
 
           {checkMode === "stripe-charge" && (
             <div className="flex items-start gap-2 rounded-md bg-green-500/5 border border-green-500/20 px-3 py-2.5 text-xs text-green-400">
               <DollarSign className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-              <span>Stripe Charge Mode. Uses different Stripe PKs for validation. Returns: Approved / 3DS / Declined.</span>
+              <span>Stripe PM Check (alternate PK). Validates card format via payment method creation.</span>
             </div>
           )}
 
           {checkMode === "authnet" && (
             <div className="flex items-start gap-2 rounded-md bg-orange-500/5 border border-orange-500/20 px-3 py-2.5 text-xs text-orange-400">
               <Building2 className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-              <span>Authorize.net Gateway. Tokenizes card via Accept.js. Returns: Approved / Declined.</span>
+              <span>Authorize.net Accept.js tokenization. Validates card format. Invalid cards will fail tokenization.</span>
             </div>
           )}
 
