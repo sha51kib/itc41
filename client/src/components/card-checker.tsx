@@ -625,81 +625,41 @@ function CardChecker() {
 
           <div data-testid="section-check-mode">
             <Label className="text-xs font-medium text-muted-foreground mb-2 block">Check Mode</Label>
-            <div className="space-y-1">
-              <button
-                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
-                  checkMode === "chkr"
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-                onClick={() => setCheckMode("chkr")}
-                disabled={checking}
-                data-testid="button-mode-chkr"
-              >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                Chkr.cc
-                {checkMode === "chkr" && <Check className="w-3.5 h-3.5 ml-auto" />}
-              </button>
+            <div className="grid grid-cols-2 gap-4">
+              {/* Left side - Gateway selector */}
+              <div>
+                <Label className="text-xs font-medium text-muted-foreground mb-2 block">Gateway</Label>
+                <select
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  value={checkMode === "stripe-checkout" ? "chkr" : checkMode}
+                  onChange={(e) => setCheckMode(e.target.value as CheckMode)}
+                  disabled={checking}
+                  data-testid="select-gateway"
+                >
+                  <option value="chkr">Chkr.cc</option>
+                  <option value="stripe-auth">Stripe Auth</option>
+                  <option value="stripe-charge">Stripe Charge</option>
+                  <option value="authnet">Authorize.net</option>
+                </select>
+              </div>
               
-              <button
-                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
-                  checkMode === "stripe-checkout"
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-                onClick={() => setCheckMode("stripe-checkout")}
-                disabled={checking}
-                data-testid="button-mode-stripe-checkout"
-              >
-                <ShoppingCart className="w-3.5 h-3.5" />
-                Stripe Checkout
-                {checkMode === "stripe-checkout" && <Check className="w-3.5 h-3.5 ml-auto" />}
-              </button>
-              
-              <button
-                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
-                  checkMode === "stripe-auth"
-                    ? "border-blue-500 bg-blue-500/10 text-blue-400"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-                onClick={() => setCheckMode("stripe-auth")}
-                disabled={checking}
-                data-testid="button-mode-stripe-auth"
-              >
-                <CreditCard className="w-3.5 h-3.5" />
-                Stripe Auth
-                {checkMode === "stripe-auth" && <Check className="w-3.5 h-3.5 ml-auto" />}
-              </button>
-              
-              <button
-                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
-                  checkMode === "stripe-charge"
-                    ? "border-green-500 bg-green-500/10 text-green-400"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-                onClick={() => setCheckMode("stripe-charge")}
-                disabled={checking}
-                data-testid="button-mode-stripe-charge"
-              >
-                <DollarSign className="w-3.5 h-3.5" />
-                Stripe Charge
-                {checkMode === "stripe-charge" && <Check className="w-3.5 h-3.5 ml-auto" />}
-              </button>
-              
-              <button
-                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
-                  checkMode === "authnet"
-                    ? "border-orange-500 bg-orange-500/10 text-orange-400"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-                onClick={() => setCheckMode("authnet")}
-                disabled={checking}
-                data-testid="button-mode-authnet"
-              >
-                <Building2 className="w-3.5 h-3.5" />
-                Authorize.net
-                {checkMode === "authnet" && <Check className="w-3.5 h-3.5 ml-auto" />}
-              </button>
+              {/* Right side - Stripe Checkout */}
+              <div>
+                <Label className="text-xs font-medium text-muted-foreground mb-2 block">Stripe Checkout</Label>
+                <button
+                  className={`w-full flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-all ${
+                    checkMode === "stripe-checkout"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border bg-background text-muted-foreground hover:bg-accent"
+                  }`}
+                  onClick={() => setCheckMode("stripe-checkout")}
+                  disabled={checking}
+                  data-testid="button-mode-stripe-checkout"
+                >
+                  <ShoppingCart className="w-4 h-4" />
+                  {checkMode === "stripe-checkout" ? "Selected" : "Use Stripe Checkout"}
+                </button>
+              </div>
             </div>
           </div>
 
