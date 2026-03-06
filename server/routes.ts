@@ -1191,7 +1191,7 @@ export async function registerRoutes(
   // ==================== STRIPE CHECKOUT GRAB (Extract session details) ====================
   app.post("/api/stripe-checkout/grab", async (req, res) => {
     try {
-      const { checkoutUrl } = req.body;
+      let { checkoutUrl } = req.body;
       if (!checkoutUrl || typeof checkoutUrl !== "string") {
         return res.status(400).json({ success: false, message: "Missing checkout URL" });
       }
@@ -1220,9 +1220,71 @@ export async function registerRoutes(
       let cardNetworks: string[] = [];
       let lineItems: { name: string; amount: number; quantity: number }[] = [];
 
-      // Extract cs_live from URL path
-      const urlCsMatch = checkoutUrl.match(/cs_live_[A-Za-z0-9_]+/);
-      if (urlCsMatch) csLive = urlCsMatch[0];
+      // Handle buy.stripe.com links - convert to checkout.stripe.com
+      if (checkoutUrl.includes("buy.stripe.com")) {
+        const linkIdMatch = checkoutUrl.match(/buy\.stripe\.com\/([A-Za-z0-9]+)/);
+        if (linkIdMatch) {
+          const linkId = linkIdMatch[1];
+          console.log("[GRAB] Processing buy.stripe.com link:", linkId);
+          
+          // Call merchant-ui-api to get the stripe_hosted_url
+          const merchantResp = await proxyRequest(`https://merchant-ui-api.stripe.com/payment-links/${linkId}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "Origin": "https://buy.stripe.com",
+              "Referer": "https://buy.stripe.com/",
+              "User-Agent": ua,
+            },
+            body: "eid=NA&browser_locale=en-US&browser_timezone=America/New_York",
+            proxyUrl,
+            timeout: 20000,
+          });
+
+          try {
+            const merchantData = JSON.parse(merchantResp.body);
+            console.log("[GRAB] merchant-ui-api response received");
+            
+            // Get the checkout URL from merchant response
+            const stripeHostedUrl = merchantData.stripe_hosted_url || merchantData.url;
+            if (stripeHostedUrl) {
+              checkoutUrl = stripeHostedUrl;
+              console.log("[GRAB] Converted to checkout URL:", checkoutUrl.substring(0, 80) + "...");
+            }
+            
+            // Extract data from merchant response
+            csLive = merchantData.session_id || "";
+            currency = merchantData.currency || "";
+            const totalSummary = merchantData.total_summary || {};
+            amount = String(totalSummary.total || totalSummary.due || "");
+            
+            const accountSettings = merchantData.account_settings || {};
+            merchantName = accountSettings.business_name || accountSettings.name || "";
+            merchantId = accountSettings.account_id || "";
+            merchantLogo = accountSettings.logo_url || accountSettings.icon_url || "";
+            merchantCountry = accountSettings.country || "";
+            
+            paymentMethods = merchantData.payment_method_types || [];
+            
+            // Extract line items
+            const lineItemGroup = merchantData.line_item_group || {};
+            const items = lineItemGroup.line_items || [];
+            lineItems = items.map((item: any) => ({
+              name: item.name || item.description || "Item",
+              amount: item.amount || 0,
+              quantity: item.quantity || 1,
+            }));
+          } catch (parseErr) {
+            console.log("[GRAB] Failed to parse merchant-ui-api response");
+          }
+        }
+      }
+
+      // Extract cs_live from URL path (for checkout.stripe.com URLs)
+      if (!csLive) {
+        const urlCsMatch = checkoutUrl.match(/cs_live_[A-Za-z0-9_]+/);
+        if (urlCsMatch) csLive = urlCsMatch[0];
+      }
 
       // Decode XOR-5 encoded hash fragment for pk_live
       const hashFragment = checkoutUrl.split("#")[1];
