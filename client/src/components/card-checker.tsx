@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import ProxyManager from "./proxy-manager";
 
-type CheckMode = "chkr" | "stripe-auth" | "stripe-checkout";
+type CheckMode = "chkr" | "stripe-auth" | "stripe-charge" | "authnet" | "stripe-checkout";
 
 interface BinInfo {
   valid: boolean;
@@ -296,6 +296,12 @@ function CardChecker() {
       if (checkMode === "stripe-auth") {
         apiEndpoint = "/api/stripe-auth";
         apiBody = { data: normalized };
+      } else if (checkMode === "stripe-charge") {
+        apiEndpoint = "/api/stripe-charge";
+        apiBody = { data: normalized };
+      } else if (checkMode === "authnet") {
+        apiEndpoint = "/api/authnet-charge";
+        apiBody = { data: normalized };
       } else if (checkMode === "stripe-checkout") {
         apiEndpoint = "/api/stripe-checkout";
         apiBody = { data: normalized, checkoutUrl: checkoutUrl.trim(), ...(currencyOverride ? { currencyOverride } : {}) };
@@ -317,7 +323,8 @@ function CardChecker() {
         else if (checkResp.code === 0 || checkResp.status === "Die") status = "Die";
       } else {
         const s = (checkResp.status || "").toUpperCase();
-        if (s === "APPROVED" || s === "CHARGED" || checkResp.approved === true) status = checkMode === "stripe-checkout" ? "Charged" : "Approved";
+        const isChargeMode = checkMode === "stripe-checkout" || checkMode === "stripe-charge" || checkMode === "authnet";
+        if (s === "APPROVED" || s === "CHARGED" || checkResp.approved === true) status = isChargeMode ? "Charged" : "Approved";
         else if (s === "SESSION_EXPIRED") status = "Error";
         else if (s === "3DS") status = "3DS";
         else if (s === "DECLINED") status = "Declined";
@@ -605,7 +612,7 @@ function CardChecker() {
             {checkMode !== "chkr" && (
               <Badge variant="outline" className="text-[10px] gap-1">
                 <Zap className="w-2.5 h-2.5" />
-                {checkMode === "stripe-auth" ? "Stripe Auth" : "Stripe Checkout"}
+                {checkMode === "stripe-auth" ? "Stripe Auth" : checkMode === "stripe-charge" ? "Stripe Charge" : checkMode === "authnet" ? "Authorize.net" : "Stripe Checkout"}
               </Badge>
             )}
           </div>
@@ -618,7 +625,7 @@ function CardChecker() {
 
           <div data-testid="section-check-mode">
             <Label className="text-xs font-medium text-muted-foreground mb-2 block">Check Mode</Label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2 mb-2">
               <button
                 className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
                   checkMode === "chkr"
@@ -634,19 +641,6 @@ function CardChecker() {
               </button>
               <button
                 className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
-                  checkMode === "stripe-auth"
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-                onClick={() => setCheckMode("stripe-auth")}
-                disabled={checking}
-                data-testid="button-mode-stripe-auth"
-              >
-                <CreditCard className="w-3.5 h-3.5" />
-                Stripe Auth
-              </button>
-              <button
-                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
                   checkMode === "stripe-checkout"
                     ? "border-primary bg-primary/10 text-primary"
                     : "border-border bg-background text-muted-foreground hover:bg-accent"
@@ -659,12 +653,68 @@ function CardChecker() {
                 Stripe Checkout
               </button>
             </div>
+            <Label className="text-xs font-medium text-muted-foreground mb-2 block">Stripe Checker</Label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                  checkMode === "stripe-auth"
+                    ? "border-blue-500 bg-blue-500/10 text-blue-400"
+                    : "border-border bg-background text-muted-foreground hover:bg-accent"
+                }`}
+                onClick={() => setCheckMode("stripe-auth")}
+                disabled={checking}
+                data-testid="button-mode-stripe-auth"
+              >
+                <CreditCard className="w-3.5 h-3.5" />
+                Auth
+              </button>
+              <button
+                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                  checkMode === "stripe-charge"
+                    ? "border-green-500 bg-green-500/10 text-green-400"
+                    : "border-border bg-background text-muted-foreground hover:bg-accent"
+                }`}
+                onClick={() => setCheckMode("stripe-charge")}
+                disabled={checking}
+                data-testid="button-mode-stripe-charge"
+              >
+                <DollarSign className="w-3.5 h-3.5" />
+                Charge
+              </button>
+              <button
+                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                  checkMode === "authnet"
+                    ? "border-orange-500 bg-orange-500/10 text-orange-400"
+                    : "border-border bg-background text-muted-foreground hover:bg-accent"
+                }`}
+                onClick={() => setCheckMode("authnet")}
+                disabled={checking}
+                data-testid="button-mode-authnet"
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                Authorize.net
+              </button>
+            </div>
           </div>
 
           {checkMode === "stripe-auth" && (
             <div className="flex items-start gap-2 rounded-md bg-blue-500/5 border border-blue-500/20 px-3 py-2.5 text-xs text-blue-400">
               <Zap className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-              <span>WooCommerce Setup Intent flow. Registers account → creates payment method → confirms setup intent. Returns: Approved / 3DS / Declined.</span>
+              <span>WooCommerce Setup Intent flow. Creates payment method → confirms setup intent. Returns: Approved / 3DS / Declined.</span>
+            </div>
+          )}
+
+          {checkMode === "stripe-charge" && (
+            <div className="flex items-start gap-2 rounded-md bg-green-500/5 border border-green-500/20 px-3 py-2.5 text-xs text-green-400">
+              <DollarSign className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>Stripe Charge Mode. Uses different Stripe PKs for validation. Returns: Approved / 3DS / Declined.</span>
+            </div>
+          )}
+
+          {checkMode === "authnet" && (
+            <div className="flex items-start gap-2 rounded-md bg-orange-500/5 border border-orange-500/20 px-3 py-2.5 text-xs text-orange-400">
+              <Building2 className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>Authorize.net Gateway. Tokenizes card via Accept.js. Returns: Approved / Declined.</span>
             </div>
           )}
 
@@ -880,7 +930,7 @@ function CardChecker() {
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="w-4 h-4 animate-spin" />
               <span>
-                {checkMode === "chkr" ? "Checking" : checkMode === "stripe-auth" ? "Auth checking" : "Hitting"} card {currentIdx} of {totalCards}...
+                {checkMode === "chkr" ? "Checking" : checkMode === "stripe-auth" ? "Auth checking" : checkMode === "stripe-charge" || checkMode === "authnet" ? "Charging" : "Hitting"} card {currentIdx} of {totalCards}...
               </span>
             </div>
           )}
@@ -899,7 +949,7 @@ function CardChecker() {
             ) : (
               <Button onClick={handleCheck} data-testid="button-check">
                 <Play className="w-4 h-4 mr-1.5" />
-                {checkMode === "chkr" ? "Check Cards" : checkMode === "stripe-auth" ? "Auth Check" : "Hit Cards"}
+                {checkMode === "chkr" ? "Check Cards" : checkMode === "stripe-auth" ? "Auth Check" : checkMode === "stripe-charge" || checkMode === "authnet" ? "Charge Cards" : "Hit Cards"}
               </Button>
             )}
           </div>
@@ -912,7 +962,7 @@ function CardChecker() {
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-xl font-semibold" data-testid="text-check-heading">Results</h2>
-                {liveCards.length > 0 && <Badge className="bg-green-500/15 text-green-600 border-green-500/30">{liveCards.length} {checkMode === "stripe-checkout" ? "Charged" : checkMode === "stripe-auth" ? "Approved" : "Live"}</Badge>}
+                {liveCards.length > 0 && <Badge className="bg-green-500/15 text-green-600 border-green-500/30">{liveCards.length} {checkMode === "stripe-checkout" || checkMode === "stripe-charge" || checkMode === "authnet" ? "Charged" : checkMode === "stripe-auth" ? "Approved" : "Live"}</Badge>}
                 {tdsCards.length > 0 && <Badge className="bg-blue-500/15 text-blue-500 border-blue-500/30">{tdsCards.length} 3DS</Badge>}
                 {deadCards.length > 0 && <Badge variant="destructive">{deadCards.length} {checkMode !== "chkr" ? "Declined" : "Dead"}</Badge>}
                 {unknownCards.length > 0 && <Badge className="bg-yellow-500/15 text-yellow-600 border-yellow-500/30">{unknownCards.length} Unknown</Badge>}
@@ -936,7 +986,7 @@ function CardChecker() {
                     <div className="flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-green-500" />
                       <CardTitle className="text-sm font-semibold text-green-600">
-                        {checkMode === "stripe-checkout" ? "Charged Cards" : checkMode === "stripe-auth" ? "Approved Cards" : "Live Cards"}
+                        {checkMode === "stripe-checkout" || checkMode === "stripe-charge" || checkMode === "authnet" ? "Charged Cards" : checkMode === "stripe-auth" ? "Approved Cards" : "Live Cards"}
                       </CardTitle>
                       <Badge className="bg-green-500/15 text-green-600 border-green-500/30 text-[10px]">{liveCards.length}</Badge>
                     </div>
