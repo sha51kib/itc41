@@ -625,9 +625,9 @@ function CardChecker() {
 
           <div data-testid="section-check-mode">
             <Label className="text-xs font-medium text-muted-foreground mb-2 block">Check Mode</Label>
-            <div className="grid grid-cols-2 gap-2 mb-2">
+            <div className="space-y-1">
               <button
-                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
                   checkMode === "chkr"
                     ? "border-primary bg-primary/10 text-primary"
                     : "border-border bg-background text-muted-foreground hover:bg-accent"
@@ -638,9 +638,11 @@ function CardChecker() {
               >
                 <ShieldCheck className="w-3.5 h-3.5" />
                 Chkr.cc
+                {checkMode === "chkr" && <Check className="w-3.5 h-3.5 ml-auto" />}
               </button>
+              
               <button
-                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
                   checkMode === "stripe-checkout"
                     ? "border-primary bg-primary/10 text-primary"
                     : "border-border bg-background text-muted-foreground hover:bg-accent"
@@ -651,12 +653,11 @@ function CardChecker() {
               >
                 <ShoppingCart className="w-3.5 h-3.5" />
                 Stripe Checkout
+                {checkMode === "stripe-checkout" && <Check className="w-3.5 h-3.5 ml-auto" />}
               </button>
-            </div>
-            <Label className="text-xs font-medium text-muted-foreground mb-2 block">Stripe Checker</Label>
-            <div className="grid grid-cols-3 gap-2">
+              
               <button
-                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
                   checkMode === "stripe-auth"
                     ? "border-blue-500 bg-blue-500/10 text-blue-400"
                     : "border-border bg-background text-muted-foreground hover:bg-accent"
@@ -666,10 +667,12 @@ function CardChecker() {
                 data-testid="button-mode-stripe-auth"
               >
                 <CreditCard className="w-3.5 h-3.5" />
-                Auth
+                Stripe Auth
+                {checkMode === "stripe-auth" && <Check className="w-3.5 h-3.5 ml-auto" />}
               </button>
+              
               <button
-                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
                   checkMode === "stripe-charge"
                     ? "border-green-500 bg-green-500/10 text-green-400"
                     : "border-border bg-background text-muted-foreground hover:bg-accent"
@@ -679,10 +682,12 @@ function CardChecker() {
                 data-testid="button-mode-stripe-charge"
               >
                 <DollarSign className="w-3.5 h-3.5" />
-                Charge
+                Stripe Charge
+                {checkMode === "stripe-charge" && <Check className="w-3.5 h-3.5 ml-auto" />}
               </button>
+              
               <button
-                className={`flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
+                className={`w-full flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium transition-all ${
                   checkMode === "authnet"
                     ? "border-orange-500 bg-orange-500/10 text-orange-400"
                     : "border-border bg-background text-muted-foreground hover:bg-accent"
@@ -693,6 +698,7 @@ function CardChecker() {
               >
                 <Building2 className="w-3.5 h-3.5" />
                 Authorize.net
+                {checkMode === "authnet" && <Check className="w-3.5 h-3.5 ml-auto" />}
               </button>
             </div>
           </div>
