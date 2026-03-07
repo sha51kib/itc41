@@ -610,7 +610,7 @@ export async function registerRoutes(
       const attempts = await Promise.all(ipServices.map(async (svc) => {
         const start = Date.now();
         try {
-          const resp = await proxyRequest(svc.url, { proxyUrl, timeout: 15000 });
+          const resp = await proxyRequest(svc.url, { proxyUrl, timeout: 8000 });
           const time = Date.now() - start;
           if (resp.status === 200) {
             try {
@@ -642,7 +642,7 @@ export async function registerRoutes(
       if (!result.country && result.ip) {
         try {
           const geoStart = Date.now();
-          const geoResp = await proxyRequest(`https://ipinfo.io/${result.ip}/json`, { proxyUrl, timeout: 10000 });
+          const geoResp = await proxyRequest(`https://ipinfo.io/${result.ip}/json`, { proxyUrl, timeout: 5000 });
           const geoTime = Date.now() - geoStart;
           if (geoResp.status === 200) {
             try {
@@ -678,7 +678,7 @@ export async function registerRoutes(
       return res.json({ valid: true, message: "No proxy configured (running direct)" });
     }
     try {
-      const resp = await proxyRequest("http://ip-api.com/json/?fields=query,status", { proxyUrl: proxy.url, timeout: 10000 });
+      const resp = await proxyRequest("http://ip-api.com/json/?fields=query,status", { proxyUrl: proxy.url, timeout: 6000 });
       if (resp.status === 200) {
         const data = JSON.parse(resp.body);
         if (data.status === "success") {

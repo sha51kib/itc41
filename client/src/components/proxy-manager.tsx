@@ -2,13 +2,12 @@ import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import {
-  Shield, Plus, Trash2, Loader2, CheckCircle2, XCircle,
+  Shield, Trash2, Loader2, CheckCircle2, XCircle,
   Globe, Wifi, Copy, Check, Fingerprint, RefreshCw,
-  Star, Power, Signal, ShieldOff,
+  Power, Signal, ShieldOff,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -92,7 +91,7 @@ function parseProxyInput(input: string): { url?: string; error?: string; host?: 
 }
 
 // Try a list of protocols for a given parsed proxy input until one works
-async function tryProtocolsForProxy(parsed: ReturnType<typeof parseProxyInput>, checkFn: (url: string) => Promise<CheckResult>, timeout = 12000) {
+async function tryProtocolsForProxy(parsed: ReturnType<typeof parseProxyInput>, checkFn: (url: string) => Promise<CheckResult>, timeout = 8000) {
   if (!parsed) return { working: false, message: 'Invalid proxy' } as CheckResult;
 
   // If the input already had a protocol, trust that and just check it
@@ -100,22 +99,29 @@ async function tryProtocolsForProxy(parsed: ReturnType<typeof parseProxyInput>, 
     return await checkFn(parsed.url);
   }
 
-  // Otherwise try protocols in order: http -> https -> socks5 -> socks4
+  // Try all protocols in parallel for faster results
   const protocols = ['http', 'https', 'socks5', 'socks4'];
-  for (const proto of protocols) {
-    const auth = parsed.user && parsed.pass ? `${encodeURIComponent(parsed.user)}:${encodeURIComponent(parsed.pass)}@` : '';
-    const url = `${proto}://${auth}${parsed.host}:${parsed.port}`;
-    const res = await checkFn(url);
-    if (res.working) {
-      return { ...res, message: `${res.message} (protocol: ${proto})` } as CheckResult;
-    }
+  const auth = parsed.user && parsed.pass ? `${encodeURIComponent(parsed.user)}:${encodeURIComponent(parsed.pass)}@` : '';
+  
+  const results = await Promise.all(
+    protocols.map(async (proto) => {
+      const url = `${proto}://${auth}${parsed.host}:${parsed.port}`;
+      const res = await checkFn(url);
+      return { proto, url, res };
+    })
+  );
+
+  // Find first working result
+  const working = results.find(r => r.res.working);
+  if (working) {
+    return { ...working.res, message: `${working.res.message} (protocol: ${working.proto})` } as CheckResult;
   }
 
   return { working: false, message: 'All protocols failed' } as CheckResult;
 }
 
-// Simple concurrency runner
-async function runWithConcurrency<T, R>(items: T[], worker: (item: T) => Promise<R>, concurrency = 6) {
+// Simple concurrency runner - increased to 10 for faster parallel processing
+async function runWithConcurrency<T, R>(items: T[], worker: (item: T) => Promise<R>, concurrency = 10) {
   const results: R[] = [];
   const executing: Promise<void>[] = [];
   let i = 0;
@@ -185,7 +191,7 @@ export default function ProxyManager() {
   };
 
   // Check proxy by routing through server (actual proxy check)
-  const checkProxyWithMultipleAPIs = useCallback(async (proxyUrl: string, timeout = 12000) => {
+  const checkProxyWithMultipleAPIs = useCallback(async (proxyUrl: string, timeout = 8000) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -230,7 +236,7 @@ export default function ProxyManager() {
     } catch (err: any) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        return { working: false, message: 'Request timeout (>12s)' };
+        return { working: false, message: 'Request timeout (>8s)' };
       }
       return { working: false, message: `Error: ${err.message}` };
     }
@@ -353,7 +359,7 @@ export default function ProxyManager() {
     // Worker: for each item try protocol fallback (if necessary) using server check
     const worker = async (item: { raw: string; parsed: ReturnType<typeof parseProxyInput> }) => {
       try {
-        const res = await tryProtocolsForProxy(item.parsed, (u: string) => checkProxyWithMultipleAPIs(u), 12000);
+        const res = await tryProtocolsForProxy(item.parsed, (u: string) => checkProxyWithMultipleAPIs(u), 8000);
         const out = { card: item.raw, ...res } as any;
         if (out.working && item.parsed.url) {
           try {
@@ -409,7 +415,14 @@ export default function ProxyManager() {
       }
     } catch {}
 
-    toast({ title: `Checked ${results.length} proxies`, description: `${workingCount} working` });
+    // Clear input and results if any proxies were working and added
+    if (workingCount > 0) {
+      setProxyInput('');
+      setCheckResults([]);
+      toast({ title: `${workingCount} proxies added`, description: `Successfully added ${workingCount} working proxy(s)` });
+    } else {
+      toast({ title: `Checked ${results.length} proxies`, description: `No working proxies found`, variant: "destructive" });
+    }
     setChecking(false);
   }, [proxyInput, toast, checkProxyWithMultipleAPIs]);
 
@@ -433,7 +446,7 @@ export default function ProxyManager() {
     setChecking(true);
     setCheckResult(null);
 
-    const data = await tryProtocolsForProxy(parsed, (u: string) => checkProxyWithMultipleAPIs(u), 12000);
+    const data = await tryProtocolsForProxy(parsed, (u: string) => checkProxyWithMultipleAPIs(u), 8000);
     setCheckResult(data);
 
     if (data.working) {
@@ -473,113 +486,6 @@ export default function ProxyManager() {
 
     setChecking(false);
   }, [proxyInput, toast, handleCheckMultiple, checkProxyWithMultipleAPIs, proxies]);
-
-  const handleAdd = useCallback(async () => {
-    if (!checkResult?.working) {
-      toast({ title: "Check First", description: "Proxy must pass check before adding", variant: "destructive" });
-      return;
-    }
-
-    // Normalize input and check for duplicates
-    const parsed = parseProxyInput(proxyInput.trim());
-    if (parsed.error || !parsed.url) {
-      toast({ title: "Invalid Format", description: parsed.error || "Invalid proxy", variant: "destructive" });
-      return;
-    }
-    const isDuplicate = proxies.some(p => p.url === parsed.url);
-    if (isDuplicate) {
-      toast({ title: "Duplicate", description: "This proxy is already in your list", variant: "destructive" });
-      return;
-    }
-
-    try {
-      const resp = await fetch("/api/proxy/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            proxy: parsed.url,
-          label: `${checkResult.country || checkResult.ip || "Proxy"} - ${checkResult.ip || "Unknown"}`,
-          ip: checkResult.ip,
-          country: checkResult.country,
-          city: checkResult.city,
-          isp: checkResult.isp,
-          proxyType: checkResult.proxyType,
-        }),
-      });
-      const data = await resp.json();
-      if (data.success) {
-        setProxies(data.proxies);
-        // make newly added proxy the active/default
-        const idx = data.proxies.findIndex((p: any) => p.url === parsed.url);
-        if (idx >= 0) {
-          await fetch("/api/proxy/set-active", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ index: idx }),
-          });
-          setActiveIndex(idx);
-        }
-        setProxyInput("");
-        setCheckResult(null);
-        toast({ title: "Proxy Added", description: `${checkResult.proxyType || 'Proxy'} proxy added successfully` });
-      }
-    } catch {
-      toast({ title: "Error", description: "Failed to add proxy", variant: "destructive" });
-    }
-  }, [proxyInput, checkResult, proxies, toast]);
-
-  const handleAddMultiple = useCallback(async () => {
-    const workingProxies = checkResults.filter(r => r.working);
-    if (workingProxies.length === 0) {
-      toast({ title: "No Working Proxies", description: "Add at least one working proxy", variant: "destructive" });
-      return;
-    }
-
-    // Remove duplicates based on normalized proxy URL
-    const seenProxies = new Set(proxies.map(p => p.url));
-    const uniqueProxies = workingProxies.filter(r => {
-      const raw = (r as any).card || '';
-      const parsed = parseProxyInput(raw.trim());
-      return parsed.url && !seenProxies.has(parsed.url);
-    });
-    const duplicateCount = workingProxies.length - uniqueProxies.length;
-
-    if (uniqueProxies.length === 0) {
-      toast({ title: "All Duplicates", description: `${duplicateCount} proxy(ies) already in list`, variant: "destructive" });
-      return;
-    }
-
-    try {
-      for (const result of uniqueProxies) {
-        const raw = (result as any).card || '';
-        const parsed = parseProxyInput(raw.trim());
-        if (!parsed.url) continue;
-        await fetch("/api/proxy/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            proxy: parsed.url,
-            label: `${result.country || result.ip || "Proxy"} - ${result.ip || "Unknown"}`,
-            ip: result.ip,
-            country: result.country,
-            city: result.city,
-            isp: result.isp,
-            proxyType: result.proxyType,
-          }),
-        });
-      }
-      const listResp = await fetch("/api/proxy/list");
-      const listData = await listResp.json();
-      setProxies(listData.proxies || []);
-      setActiveIndex(listData.activeIndex ?? -1);
-      setProxyInput("");
-      setCheckResults([]);
-      const msg = duplicateCount > 0 ? `${uniqueProxies.length} added (${duplicateCount} already existed)` : `${uniqueProxies.length} added`;
-      toast({ title: "Proxies Added", description: msg });
-    } catch {
-      toast({ title: "Error", description: "Failed to add proxies", variant: "destructive" });
-    }
-  }, [checkResults, proxies, toast]);
 
   const handleRemove = useCallback(async (index: number) => {
     try {
@@ -721,29 +627,16 @@ export default function ProxyManager() {
               </Button>
             </div>
 
-            {/* Multi-Check Results */}
+            {/* Multi-Check Results - Only shows if there are failed proxies */}
             {checkResults.length > 0 && (
               <div className="space-y-2 pt-2 border-t">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold text-muted-foreground">
-                    Results ({checkResults.filter(r => r.working).length}/{checkResults.length} working)
+                    Results ({checkResults.filter(r => r.working).length}/{checkResults.length} working - auto-added)
                   </p>
-                  <div className="flex items-center gap-2">
-                    {checkResults.some(r => r.working) && (
-                      <Button
-                        size="sm"
-                        onClick={handleAddMultiple}
-                        className="h-6 text-[10px] px-2"
-                        data-testid="button-add-all-working"
-                      >
-                        <Plus className="w-2.5 h-2.5 mr-0.5" />
-                        Add All Working
-                      </Button>
-                    )}
-                    <Button size="sm" variant="ghost" onClick={() => setCheckResults([])} className="h-6 text-[10px] px-2">
-                      Clear Results
-                    </Button>
-                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setCheckResults([])} className="h-6 text-[10px] px-2">
+                    Clear Results
+                  </Button>
                 </div>
                 <div className="space-y-1 max-h-32 overflow-y-auto">
                   {checkResults.map((result, idx) => (
@@ -783,7 +676,7 @@ export default function ProxyManager() {
                 )}
                 <div className="flex-1 min-w-0">
                   <p className={`text-xs font-medium ${checkResult.working ? "text-emerald-500" : "text-destructive"}`}>
-                    {checkResult.working ? "Proxy Working" : "Proxy Failed"}
+                    {checkResult.working ? "Proxy Working - Auto Added!" : "Proxy Failed"}
                   </p>
                   <p className="text-[10px] text-muted-foreground mt-0.5">{checkResult.message}</p>
                   {checkResult.working && (
@@ -813,19 +706,6 @@ export default function ProxyManager() {
                     </div>
                   )}
                 </div>
-                {checkResult.working && !(() => {
-                    const p = parseProxyInput(proxyInput.trim());
-                    return p.url ? proxies.some(x => x.url === p.url) : false;
-                  })() && (
-                  <Button
-                    size="sm"
-                    onClick={handleAdd}
-                    className="h-6 text-[10px] px-2"
-                    data-testid="button-add-proxy"
-                  >
-                    <Plus className="w-2.5 h-2.5 mr-0.5" />Add
-                  </Button>
-                )}
               </div>
             )}
 
