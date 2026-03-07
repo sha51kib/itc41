@@ -11,6 +11,31 @@ import crypto from "crypto";
 
 const binCache = new Map<string, any>();
 
+// Custom Stripe PKs storage - users can add their own PKs from grabbed sites
+interface StripePK {
+  pk: string;
+  name: string;
+  addedAt: string;
+}
+const customStripePKs: StripePK[] = [];
+
+// Default Stripe PKs for rotation
+const defaultStripePKs: StripePK[] = [
+  { pk: "pk_live_tdIywCY9lRimUDnIsqgpXVZ0", name: "melhairandstyle.com", addedAt: "default" },
+];
+
+// Get all available Stripe PKs (default + custom)
+function getStripePKs(): StripePK[] {
+  return [...defaultStripePKs, ...customStripePKs];
+}
+
+// Get a rotated Stripe PK
+function getRotatedStripePK(): StripePK {
+  const allPKs = getStripePKs();
+  const pkIndex = Math.floor(Date.now() / 60000) % allPKs.length;
+  return allPKs[pkIndex];
+}
+
 interface ProxyEntry {
   url: string;
   label: string;
@@ -624,13 +649,24 @@ export async function registerRoutes(
           return { ok: false, time, error: `status_${resp.status}`, service: svc.url };
         } catch (err: any) {
           const time = Date.now() - start;
-          return { ok: false, time, error: err?.message || 'request_error', service: svc.url };
+          const errMsg = err?.message || 'request_error';
+          return { ok: false, time, error: errMsg, service: svc.url };
         }
       }));
 
       // Pick fastest successful attempt
       const successes = attempts.filter(a => a.ok).sort((a, b) => a.time - b.time);
       if (successes.length === 0) {
+        // Check if any attempt had 407 (Proxy Authentication Required)
+        const has407 = attempts.some(a => a.error?.includes('407'));
+        if (has407) {
+          return res.json({ 
+            working: false, 
+            message: 'Proxy requires authentication (407). Use format: ip:port:user:pass',
+            requiresAuth: true,
+            timings: attempts 
+          });
+        }
         // include timings in response for diagnostics
         return res.json({ working: false, message: 'Could not connect through proxy', timings: attempts });
       }
@@ -798,6 +834,46 @@ export async function registerRoutes(
     return res.json({ enabled: fingerprintEnabled, meta: fp.meta });
   });
 
+  // ==================== STRIPE PK MANAGEMENT ====================
+  app.get("/api/stripe-pks", async (_req, res) => {
+    const allPKs = getStripePKs();
+    return res.json({ 
+      pks: allPKs.map(pk => ({ 
+        pk: pk.pk.substring(0, 20) + "...", // Mask the PK for display
+        name: pk.name, 
+        addedAt: pk.addedAt,
+        isDefault: pk.addedAt === "default"
+      })),
+      count: allPKs.length,
+      currentIndex: Math.floor(Date.now() / 60000) % allPKs.length
+    });
+  });
+
+  app.post("/api/stripe-pks/add", async (req, res) => {
+    const { pk, name } = req.body;
+    if (!pk || typeof pk !== "string" || !pk.startsWith("pk_live_")) {
+      return res.status(400).json({ error: "Invalid Stripe PK. Must start with pk_live_" });
+    }
+    if (getStripePKs().some(existing => existing.pk === pk)) {
+      return res.status(400).json({ error: "This PK is already in the list" });
+    }
+    customStripePKs.push({ 
+      pk, 
+      name: name || "custom", 
+      addedAt: new Date().toISOString() 
+    });
+    return res.json({ success: true, count: getStripePKs().length });
+  });
+
+  app.delete("/api/stripe-pks/:index", async (req, res) => {
+    const index = parseInt(req.params.index);
+    if (isNaN(index) || index < 0 || index >= customStripePKs.length) {
+      return res.status(400).json({ error: "Invalid index" });
+    }
+    customStripePKs.splice(index, 1);
+    return res.json({ success: true, count: getStripePKs().length });
+  });
+
   // ==================== STRIPE AUTH (Direct Payment Method Validation) ====================
   app.post("/api/stripe-auth", async (req, res) => {
     const startTime = Date.now();
@@ -835,13 +911,8 @@ export async function registerRoutes(
 
       const ua = fpHeaders["User-Agent"] || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-      // Multiple Stripe PKs to rotate through for better success rate
-      // From melhairandstyle.com (reference file stripe_auth_tt.py)
-      const stripePKs = [
-        { pk: "pk_live_tdIywCY9lRimUDnIsqgpXVZ0", name: "melhairandstyle.com" },
-      ];
-      
-      const selectedPK = stripePKs[0];
+      // Use rotated Stripe PK from pool (default + custom)
+      const selectedPK = getRotatedStripePK();
       const pkLive = selectedPK.pk;
       const siteName = selectedPK.name;
 
@@ -988,12 +1059,8 @@ export async function registerRoutes(
       const profile = generateDeviceProfile();
       const ua = profile.ua;
 
-      // Use the same PK from melhairandstyle.com
-      const stripePKs = [
-        { pk: "pk_live_tdIywCY9lRimUDnIsqgpXVZ0", name: "melhairandstyle.com" },
-      ];
-      
-      const selectedPK = stripePKs[0];
+      // Use rotated Stripe PK from pool (default + custom)
+      const selectedPK = getRotatedStripePK();
       const pkLive = selectedPK.pk;
 
       const stripeHeaders: Record<string, string> = {

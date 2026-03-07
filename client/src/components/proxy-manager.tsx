@@ -32,6 +32,7 @@ interface CheckResult {
   isp?: string;
   proxyType?: string;
   message: string;
+  requiresAuth?: boolean;
 }
 
 interface FingerprintMeta {
@@ -115,6 +116,16 @@ async function tryProtocolsForProxy(parsed: ReturnType<typeof parseProxyInput>, 
   const working = results.find(r => r.res.working);
   if (working) {
     return { ...working.res, message: `${working.res.message} (protocol: ${working.proto})` } as CheckResult;
+  }
+
+  // Check if any result indicates auth required (407) - prioritize this message
+  const authRequired = results.find(r => r.res.requiresAuth);
+  if (authRequired) {
+    return { 
+      working: false, 
+      message: authRequired.res.message,
+      requiresAuth: true 
+    } as CheckResult;
   }
 
   return { working: false, message: 'All protocols failed' } as CheckResult;
@@ -231,7 +242,8 @@ export default function ProxyManager() {
 
       return { 
         working: false, 
-        message: data.message || "Proxy check failed" 
+        message: data.message || "Proxy check failed",
+        requiresAuth: data.requiresAuth || false
       };
     } catch (err: any) {
       clearTimeout(timeoutId);
@@ -667,18 +679,37 @@ export default function ProxyManager() {
 
             {checkResult && (
               <div className={`flex items-start gap-2 rounded-lg px-3 py-2 text-xs ${
-                checkResult.working ? "bg-emerald-500/5 border border-emerald-500/15" : "bg-destructive/5 border border-destructive/15"
+                checkResult.working 
+                  ? "bg-emerald-500/5 border border-emerald-500/15" 
+                  : checkResult.requiresAuth 
+                    ? "bg-amber-500/5 border border-amber-500/15"
+                    : "bg-destructive/5 border border-destructive/15"
               }`}>
                 {checkResult.working ? (
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
                 ) : (
-                  <XCircle className="w-3.5 h-3.5 text-destructive shrink-0 mt-0.5" />
+                  <XCircle className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${checkResult.requiresAuth ? "text-amber-500" : "text-destructive"}`} />
                 )}
                 <div className="flex-1 min-w-0">
-                  <p className={`text-xs font-medium ${checkResult.working ? "text-emerald-500" : "text-destructive"}`}>
-                    {checkResult.working ? "Proxy Working - Auto Added!" : "Proxy Failed"}
+                  <p className={`text-xs font-medium ${
+                    checkResult.working 
+                      ? "text-emerald-500" 
+                      : checkResult.requiresAuth 
+                        ? "text-amber-500"
+                        : "text-destructive"
+                  }`}>
+                    {checkResult.working 
+                      ? "Proxy Working - Auto Added!" 
+                      : checkResult.requiresAuth 
+                        ? "Authentication Required"
+                        : "Proxy Failed"}
                   </p>
                   <p className="text-[10px] text-muted-foreground mt-0.5">{checkResult.message}</p>
+                  {checkResult.requiresAuth && (
+                    <p className="text-[10px] text-amber-400 mt-1 font-medium">
+                      💡 Add credentials: ip:port:username:password
+                    </p>
+                  )}
                   {checkResult.working && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                       {checkResult.ip && (
