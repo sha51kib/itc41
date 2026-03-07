@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import ProxyManager from "./proxy-manager";
 
-type CheckMode = "chkr" | "stripe-auth" | "stripe-charge" | "authnet" | "stripe-checkout";
+type CheckMode = "chkr" | "stripe-auth" | "stripe-charge" | "authnet" | "stripe-checkout" | "woocommerce";
 
 interface BinInfo {
   valid: boolean;
@@ -305,6 +305,9 @@ function CardChecker() {
       } else if (checkMode === "stripe-checkout") {
         apiEndpoint = "/api/stripe-checkout";
         apiBody = { data: normalized, checkoutUrl: checkoutUrl.trim(), ...(currencyOverride ? { currencyOverride } : {}) };
+      } else if (checkMode === "woocommerce") {
+        apiEndpoint = "/api/woocommerce/charge";
+        apiBody = { data: normalized };
       }
 
       const [checkResp, binInfo] = await Promise.all([
@@ -323,10 +326,10 @@ function CardChecker() {
         else if (checkResp.code === 0 || checkResp.status === "Die") status = "Die";
       } else {
         const s = (checkResp.status || "").toUpperCase();
-        const isChargeMode = checkMode === "stripe-checkout" || checkMode === "stripe-charge" || checkMode === "authnet";
+        const isChargeMode = checkMode === "stripe-checkout" || checkMode === "stripe-charge" || checkMode === "authnet" || checkMode === "woocommerce";
         if (s === "APPROVED" || s === "CHARGED" || checkResp.approved === true) status = isChargeMode ? "Charged" : "Approved";
         else if (s === "SESSION_EXPIRED") status = "Error";
-        else if (s === "3DS") status = "3DS";
+        else if (s === "3DS" || s === "3DS_REQUIRED") status = "3DS";
         else if (s === "DECLINED") status = "Declined";
         else if (s === "ERROR") status = "Error";
         else status = "Unknown";
@@ -612,7 +615,7 @@ function CardChecker() {
             {checkMode !== "chkr" && (
               <Badge variant="outline" className="text-[10px] gap-1">
                 <Zap className="w-2.5 h-2.5" />
-                {checkMode === "stripe-auth" ? "Stripe Auth" : checkMode === "stripe-charge" ? "Stripe Charge" : checkMode === "authnet" ? "Authorize.net" : "Stripe Checkout"}
+                {checkMode === "stripe-auth" ? "Stripe Auth" : checkMode === "stripe-charge" ? "Stripe Charge" : checkMode === "authnet" ? "Authorize.net" : checkMode === "woocommerce" ? "WooCommerce" : "Stripe Checkout"}
               </Badge>
             )}
           </div>
@@ -632,7 +635,21 @@ function CardChecker() {
                 <select
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                   value={checkMode === "stripe-checkout" ? "chkr" : checkMode}
-                  onChange={(e) => setCheckMode(e.target.value as CheckMode)}
+                  onChange={(e) => {
+                    const newMode = e.target.value as CheckMode;
+                    if (newMode === "woocommerce") {
+                      // Check if WooCommerce is configured
+                      fetch("/api/woocommerce/status").then(r => r.json()).then(data => {
+                        if (!data.enabled) {
+                          toast({ title: "Not Configured", description: "Please configure WooCommerce in Settings first", variant: "destructive" });
+                        } else {
+                          setCheckMode(newMode);
+                        }
+                      });
+                    } else {
+                      setCheckMode(newMode);
+                    }
+                  }}
                   disabled={checking}
                   data-testid="select-gateway"
                 >
@@ -640,6 +657,7 @@ function CardChecker() {
                   <option value="stripe-auth">Stripe Auth</option>
                   <option value="stripe-charge">Stripe Charge</option>
                   <option value="authnet">Authorize.net</option>
+                  <option value="woocommerce">WooCommerce (Real)</option>
                 </select>
               </div>
               

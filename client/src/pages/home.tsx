@@ -1,6 +1,7 @@
 import { useState, Suspense, lazy } from "react";
 import { CreditCard, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import SettingsPanel from "@/components/settings-panel";
 
 // lazy load to make initial bundle smaller and speed up UI start
 const BinExtrap = lazy(() => import("@/components/bin-extrap"));
@@ -25,16 +26,19 @@ export default function Home() {
         <div className="absolute bottom-0 left-0 w-[300px] h-[300px] bg-cyan-500/5 rounded-full blur-3xl" />
         
         <div className="relative max-w-4xl mx-auto px-4 py-8 sm:py-10">
-          <div className="flex items-center gap-4 mb-8">
-            <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-500/25 border border-blue-400/20">
-              <Zap className="w-7 h-7" />
+          <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-500/25 border border-blue-400/20">
+                <Zap className="w-7 h-7" />
+              </div>
+              <div>
+                <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-gradient" data-testid="text-title">
+                  CC Toolkit
+                </h1>
+                <p className="text-sm text-slate-400 mt-1 font-medium">Advanced card & BIN analysis</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-gradient" data-testid="text-title">
-                CC Toolkit
-              </h1>
-              <p className="text-sm text-slate-400 mt-1 font-medium">Advanced card & BIN analysis</p>
-            </div>
+            <SettingsPanel />
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:gap-4" data-testid="tab-bar">

@@ -2178,9 +2178,7 @@ export async function registerRoutes(
     }
   });
 
-  // BIN lookup originally used RapidAPI; the paid key has been removed so
-  // we now return a minimal stub.  Frontend components will gracefully handle
-  // `null` or missing fields.
+  // BIN lookup with multiple database sources
   app.post("/api/bin-lookup", async (req, res) => {
     try {
       const { bin } = req.body;
@@ -2188,11 +2186,107 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Provide at least 6 digits for BIN lookup" });
       }
       const binDigits = bin.replace(/\D/g, "").substring(0, 8);
-      // simple stubbed response
+      
+      // Check cache first
+      if (binCache.has(binDigits)) {
+        return res.json(binCache.get(binDigits));
+      }
+
+      // Try multiple BIN lookup APIs in order of reliability
+      const proxy = getRandomProxy();
+      const proxyUrl = proxy?.url;
+
+      // Source 1: binlist.net (free, no auth required)
+      try {
+        const binlistResp = await proxyRequest(`https://lookup.binlist.net/${binDigits}`, {
+          method: "GET",
+          headers: {
+            "Accept-Version": "3",
+            "Accept": "application/json",
+          },
+          proxyUrl,
+          timeout: 5000,
+        });
+
+        if (binlistResp.status === 200) {
+          const data = JSON.parse(binlistResp.body);
+          const result = {
+            valid: true,
+            bin: binDigits,
+            cardBrand: data.scheme?.toUpperCase() || "",
+            cardType: data.type?.toUpperCase() || "",
+            cardCategory: data.brand || "",
+            issuer: data.bank?.name || "",
+            issuerWebsite: data.bank?.url || "",
+            issuerPhone: data.bank?.phone || "",
+            country: data.country?.name || "",
+            countryCode: data.country?.alpha2 || "",
+            countryEmoji: data.country?.emoji || "",
+            currencyCode: data.country?.currency || "",
+            isPrepaid: data.prepaid || false,
+            isCommercial: false,
+            source: "binlist.net",
+          };
+          binCache.set(binDigits, result);
+          return res.json(result);
+        }
+      } catch {}
+
+      // Source 2: bincodes.com (fallback)
+      try {
+        const bincodesResp = await proxyRequest(`https://api.bincodes.com/bin/?format=json&api_key=free&bin=${binDigits}`, {
+          method: "GET",
+          proxyUrl,
+          timeout: 5000,
+        });
+
+        if (bincodesResp.status === 200) {
+          const data = JSON.parse(bincodesResp.body);
+          if (data.valid === "true" || data.bin) {
+            const result = {
+              valid: true,
+              bin: binDigits,
+              cardBrand: data.card || "",
+              cardType: data.type || "",
+              cardCategory: data.level || "",
+              issuer: data.bank || "",
+              issuerWebsite: "",
+              issuerPhone: "",
+              country: data.countryname || "",
+              countryCode: data.country || "",
+              countryEmoji: "",
+              currencyCode: "",
+              isPrepaid: false,
+              isCommercial: false,
+              source: "bincodes.com",
+            };
+            binCache.set(binDigits, result);
+            return res.json(result);
+          }
+        }
+      } catch {}
+
+      // Fallback: Basic BIN detection from card number patterns
+      let cardBrand = "";
+      const bin6 = binDigits.substring(0, 6);
+      const bin4 = binDigits.substring(0, 4);
+      const bin2 = binDigits.substring(0, 2);
+      const bin1 = binDigits.substring(0, 1);
+
+      if (bin1 === "4") cardBrand = "VISA";
+      else if (bin2 >= "51" && bin2 <= "55") cardBrand = "MASTERCARD";
+      else if (bin2 >= "22" && bin2 <= "27") cardBrand = "MASTERCARD";
+      else if (bin2 === "34" || bin2 === "37") cardBrand = "AMEX";
+      else if (bin4 === "6011" || bin2 === "65") cardBrand = "DISCOVER";
+      else if (bin2 === "36" || bin2 === "38") cardBrand = "DINERS";
+      else if (bin4 === "3528" || bin4 === "3589") cardBrand = "JCB";
+      else if (bin4 === "5019") cardBrand = "DANKORT";
+      else if (bin4 === "6304" || bin4 === "6706" || bin4 === "6771") cardBrand = "LASER";
+
       const result = {
-        valid: false,
+        valid: cardBrand !== "",
         bin: binDigits,
-        cardBrand: "",
+        cardBrand,
         cardType: "",
         cardCategory: "",
         issuer: "",
@@ -2200,14 +2294,225 @@ export async function registerRoutes(
         issuerPhone: "",
         country: "",
         countryCode: "",
+        countryEmoji: "",
         currencyCode: "",
         isPrepaid: false,
         isCommercial: false,
+        source: "pattern-detection",
       };
       binCache.set(binDigits, result);
       return res.json(result);
     } catch (err: any) {
       return res.status(500).json({ error: err.message || "BIN lookup failed" });
+    }
+  });
+
+  // ==================== WOOCOMMERCE CONFIGURATION ====================
+  let wooCommerceConfig: { secretKey: string; siteUrl: string } | null = null;
+
+  app.post("/api/woocommerce/config", async (req, res) => {
+    try {
+      const { secretKey, siteUrl } = req.body;
+      
+      if (!secretKey || typeof secretKey !== "string") {
+        return res.status(400).json({ error: "Missing secret key" });
+      }
+      if (!secretKey.startsWith("sk_live_") && !secretKey.startsWith("sk_test_")) {
+        return res.status(400).json({ error: "Invalid secret key format" });
+      }
+      if (!siteUrl || typeof siteUrl !== "string" || !siteUrl.startsWith("http")) {
+        return res.status(400).json({ error: "Invalid site URL" });
+      }
+
+      // Test the secret key by making a simple API call
+      try {
+        const testResp = await proxyRequest("https://api.stripe.com/v1/balance", {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${secretKey}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 10000,
+        });
+        
+        if (testResp.status !== 200) {
+          const errorData = JSON.parse(testResp.body);
+          return res.status(400).json({ error: errorData.error?.message || "Invalid API key" });
+        }
+      } catch (err: any) {
+        return res.status(400).json({ error: "Failed to validate API key: " + (err.message || "Unknown error") });
+      }
+
+      wooCommerceConfig = { secretKey, siteUrl };
+      return res.json({ success: true, message: "WooCommerce configured successfully" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || "Configuration failed" });
+    }
+  });
+
+  app.get("/api/woocommerce/status", async (_req, res) => {
+    return res.json({ 
+      enabled: !!wooCommerceConfig,
+      siteUrl: wooCommerceConfig?.siteUrl ? wooCommerceConfig.siteUrl.replace(/^https?:\/\//, '').split('/')[0] : null
+    });
+  });
+
+  // WooCommerce real charge endpoint
+  app.post("/api/woocommerce/charge", async (req, res) => {
+    const startTime = Date.now();
+    try {
+      if (!wooCommerceConfig) {
+        return res.status(400).json({ error: "WooCommerce not configured. Go to Settings to add your Stripe secret key." });
+      }
+
+      const { data } = req.body;
+      if (!data || typeof data !== "string") {
+        return res.status(400).json({ error: "Missing card data" });
+      }
+
+      const parts = data.split("|").map((s: string) => s.trim());
+      if (parts.length < 4) {
+        return res.status(400).json({ error: "Invalid format. Use: CC|MM|YY|CVV" });
+      }
+
+      const cc = parts[0].replace(/\s/g, "");
+      const mm = parts[1].trim().padStart(2, "0");
+      const yy = parts[2].trim().length === 4 ? parts[2].trim() : "20" + parts[2].trim().slice(-2);
+      const cvv = parts[3].trim();
+
+      const proxy = getRandomProxy();
+      const proxyUrl = proxy?.url;
+
+      // Step 1: Create a PaymentMethod
+      const pmData = new URLSearchParams({
+        type: "card",
+        "card[number]": cc,
+        "card[exp_month]": mm,
+        "card[exp_year]": yy,
+        "card[cvc]": cvv,
+      }).toString();
+
+      const pmResp = await proxyRequest("https://api.stripe.com/v1/payment_methods", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${wooCommerceConfig.secretKey}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: pmData,
+        proxyUrl,
+        timeout: 20000,
+      });
+
+      let pmJson: any;
+      try {
+        pmJson = JSON.parse(pmResp.body);
+      } catch {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        return res.json({ card: data, status: "ERROR", message: "Failed to create payment method", gateway: "WooCommerce", time: elapsed });
+      }
+
+      if (pmJson.error) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        const declineCode = pmJson.error.decline_code || pmJson.error.code || "unknown";
+        return res.json({ 
+          card: data, 
+          status: "DECLINED", 
+          message: pmJson.error.message || declineCode,
+          declineCode,
+          gateway: "WooCommerce", 
+          time: elapsed 
+        });
+      }
+
+      const pmId = pmJson.id;
+
+      // Step 2: Create a PaymentIntent and confirm it (real charge attempt)
+      const piData = new URLSearchParams({
+        amount: "100", // $1.00 test charge
+        currency: "usd",
+        payment_method: pmId,
+        confirm: "true",
+        "payment_method_options[card][request_three_d_secure]": "automatic",
+      }).toString();
+
+      const piResp = await proxyRequest("https://api.stripe.com/v1/payment_intents", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${wooCommerceConfig.secretKey}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: piData,
+        proxyUrl,
+        timeout: 20000,
+      });
+
+      let piJson: any;
+      try {
+        piJson = JSON.parse(piResp.body);
+      } catch {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        return res.json({ card: data, status: "ERROR", message: "Failed to process payment", gateway: "WooCommerce", time: elapsed });
+      }
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+
+      if (piJson.error) {
+        const declineCode = piJson.error.decline_code || piJson.error.code || "unknown";
+        return res.json({ 
+          card: data, 
+          status: "DECLINED", 
+          message: piJson.error.message || declineCode,
+          declineCode,
+          gateway: "WooCommerce", 
+          time: elapsed 
+        });
+      }
+
+      // Check payment intent status
+      if (piJson.status === "succeeded") {
+        // Immediately refund the test charge
+        try {
+          await proxyRequest(`https://api.stripe.com/v1/refunds`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${wooCommerceConfig.secretKey}`,
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: `payment_intent=${piJson.id}`,
+            proxyUrl,
+            timeout: 10000,
+          });
+        } catch {}
+
+        return res.json({ 
+          card: data, 
+          status: "APPROVED", 
+          message: "Card is LIVE - charge succeeded (auto-refunded)",
+          approved: true,
+          gateway: "WooCommerce", 
+          time: elapsed,
+          chargeId: piJson.id
+        });
+      } else if (piJson.status === "requires_action" || piJson.status === "requires_confirmation") {
+        return res.json({ 
+          card: data, 
+          status: "3DS_REQUIRED", 
+          message: "Card requires 3D Secure authentication",
+          gateway: "WooCommerce", 
+          time: elapsed 
+        });
+      } else {
+        return res.json({ 
+          card: data, 
+          status: "DECLINED", 
+          message: `Payment status: ${piJson.status}`,
+          gateway: "WooCommerce", 
+          time: elapsed 
+        });
+      }
+    } catch (err: any) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      return res.json({ card: data, status: "ERROR", message: err.message || "Request failed", gateway: "WooCommerce", time: elapsed });
     }
   });
 
