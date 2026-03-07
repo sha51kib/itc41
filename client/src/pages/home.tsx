@@ -18,19 +18,22 @@ export default function Home() {
 
   return (
     <div className="min-h-screen">
-      <div className="relative overflow-hidden border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/5 via-purple-500/5 to-pink-500/5" />
-        <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-l from-indigo-500/10 to-transparent rounded-full blur-3xl" />
+      {/* Header */}
+      <div className="relative overflow-hidden border-b border-blue-900/30 bg-gradient-to-r from-slate-900/90 via-blue-950/80 to-slate-900/90 backdrop-blur-xl">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-500/10 via-transparent to-transparent" />
+        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-blue-500/5 rounded-full blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-[300px] h-[300px] bg-cyan-500/5 rounded-full blur-3xl" />
+        
         <div className="relative max-w-4xl mx-auto px-4 py-8 sm:py-10">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 text-white shadow-lg shadow-indigo-500/30">
-              <Zap className="w-6 h-6" />
+          <div className="flex items-center gap-4 mb-8">
+            <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-500/25 border border-blue-400/20">
+              <Zap className="w-7 h-7" />
             </div>
             <div>
-              <h1 className="text-3xl sm:text-4xl font-bold tracking-tight bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400 bg-clip-text text-transparent" data-testid="text-title">
+              <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-gradient" data-testid="text-title">
                 CC Toolkit
               </h1>
-              <p className="text-sm text-muted-foreground mt-1">Advanced card & BIN analysis</p>
+              <p className="text-sm text-slate-400 mt-1 font-medium">Advanced card & BIN analysis</p>
             </div>
           </div>
 
@@ -44,10 +47,10 @@ export default function Home() {
                   onClick={() => setActiveTab(tab.id)}
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  className={`relative flex flex-col items-center gap-1.5 rounded-xl px-4 py-3 sm:py-4 text-center transition-all cursor-pointer border backdrop-blur-sm ${
+                  className={`relative flex flex-col items-center gap-2 rounded-xl px-4 py-4 sm:py-5 text-center transition-all cursor-pointer border ${
                     isActive
-                      ? "bg-gradient-to-br from-indigo-500 to-purple-500 text-white border-indigo-400/50 shadow-lg shadow-indigo-500/30"
-                      : "bg-card/50 text-muted-foreground border-border/40 hover:bg-card hover:text-foreground hover:border-border/60"
+                      ? "bg-gradient-to-br from-blue-600 to-blue-700 text-white border-blue-500/50 shadow-lg shadow-blue-600/30"
+                      : "bg-slate-900/50 text-slate-400 border-slate-700/50 hover:bg-slate-800/50 hover:text-slate-200 hover:border-slate-600/50"
                   }`}
                   data-testid={`tab-${tab.id}`}
                 >
@@ -58,8 +61,8 @@ export default function Home() {
                       initial={false}
                     />
                   )}
-                  <Icon className="w-5 h-5 relative z-10" />
-                  <span className="text-xs sm:text-sm font-semibold leading-tight relative z-10">{tab.label}</span>
+                  <Icon className={`w-5 h-5 relative z-10 ${isActive ? 'text-white' : 'text-blue-400'}`} />
+                  <span className="text-sm font-semibold leading-tight relative z-10">{tab.label}</span>
                 </motion.button>
               );
             })}
